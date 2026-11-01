@@ -316,6 +316,17 @@ compose plus the dump. The whole fleet's fetches fail for the ~30 s restart, so 
   or the `Read` tool instead of `Bash cat`/`grep`/`tail` on such a path — don't fight it by trying
   to rephrase the same `cat` command.
 
+## A secret can leak through the request path, and your own log read can re-leak it (2026-10-31)
+
+`pbpaste | ssh root@ansible-ctrl /root/bin/infisical-set.sh HA_CLAUDE_CODE_TOKEN` failed with "unable to
+process new secret creations ... POST /api/v3/secrets/raw/". The backend log showed the JWT had landed
+in the URL as the secret *key*, so Infisical logged it. The root cause isn't found yet; the same script
+worked the day before. Until it is, don't hand the `pbpaste | infisical-set.sh` path out for one-off
+secrets: use the Infisical web UI. When reading any API server log, redact JWT-shaped tokens first
+(`sed -E 's/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/<JWT>/g'`) and drop `/secrets/raw/<x>`
+path tails. A `grep -v token=` filter still prints a token that arrived in the URL path. Full incident:
+`reference_infisical_set_key_became_value` memory.
+
 ## Full secret inventory as of 2026-09-02 (for reference, not exhaustive going forward)
 
 `homelab-fleet` holds: Tailscale OAuth, Postmark, shared Telegram bot token, Grafana API token,

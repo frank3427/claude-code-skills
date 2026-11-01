@@ -127,3 +127,14 @@ done
 Remember each independent-kernel host may need a different SSH user (root vs. a hardened
 non-root sudo user vs. a bare-metal account) — don't assume `root@` uniformly across the
 fleet.
+
+## Batching a fleet-wide upgrade behind one pve reboot (2026-11-01)
+
+When a report flags many hosts needing updates and reboots at once, don't reboot each guest. LXCs
+share the Proxmox host's kernel, so: (1) upgrade every guest with **no reboot**; (2) upgrade `pve`;
+(3) reboot `pve` **once** at the end, which restarts every guest and picks up their pending work in
+one window. In the homelab this is `homelab-ansible/playbooks/fleet-apt-upgrade.yml` (serial, pihole
+canary first, stops at the first unhealthy host; `-e include_pve=true` for step 2; it never reboots).
+VMs (Home Assistant, PBS, Infisical) do restart with pve but have their own kernels, so check their
+own reboot-required too. Tell the user up front that the pve reboot takes DNS, Home Assistant and
+everything on it down for a few minutes, and agree the timing first.
