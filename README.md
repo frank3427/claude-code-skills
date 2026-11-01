@@ -111,6 +111,13 @@ Monitoring, reporting, access, and secrets across the whole fleet rather than an
 
 ## Cloudflare
 
+The skills from `cloudflare/skills` (cloudflare, wrangler, workers-best-practices, agents-sdk,
+durable-objects, sandbox-stable, workers-profiling, turnstile-spin, web-perf, cloudflare-email-service,
+cloudflare-one, cloudflare-one-migrations) are plain copies of upstream `1a33048` (2026-10-31), reviewed
+2026-11-01: markdown only, no scripts. Update by re-copying each `skills/<name>/` directory. Left out on
+purpose: `cf-cli` (the `cf` CLI is not adopted; Will's projects use Wrangler), and basin, k2,
+gateway-workers, nextjs-on-cloudflare and sandbox-next/-migrate-to-next (no current use).
+
 - **cloudflare** — general-purpose Cloudflare platform skill: Workers, Pages, KV/D1/R2, Workers
   AI, networking, security, infra-as-code.
 - **cloudflare-r2-rclone-backup** — nightly offsite backups to R2 via rclone's S3-compatible API
@@ -130,7 +137,9 @@ Monitoring, reporting, access, and secrets across the whole fleet rather than an
   Cloudflare Agents SDK.
 - **durable-objects** — stateful coordination (chat rooms, booking systems), RPC methods, SQLite
   storage, alarms.
-- **sandbox-sdk** — sandboxed code execution (interpreters, CI/CD, untrusted-code execution).
+- **sandbox-stable** — sandboxed code execution on stable `@cloudflare/sandbox` (interpreters, CI/CD,
+  untrusted code). Upstream renamed it from `sandbox-sdk`.
+- **workers-profiling** — CPU and memory profiling of deployed Workers and Durable Objects.
 - **turnstile-spin** — end-to-end Cloudflare Turnstile setup: widget creation, siteverify Worker,
   frontend snippets.
 - **workers-best-practices** — production best practices for Worker code and `wrangler.jsonc`.
