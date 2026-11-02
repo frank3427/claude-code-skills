@@ -164,6 +164,10 @@ gateway-workers, nextjs-on-cloudflare and sandbox-next/-migrate-to-next (no curr
 
 ## Web / design / verification
 
+- **wordpress-static-export** — a WordPress site served as a static copy on a Git-integrated Pages
+  project while WordPress stays a private editor: wget-crawl export with completeness checks
+  (sitemap URLs, every referenced asset, feed, no private hostnames), pull-based publisher, Publish
+  button. Built 2026-11-01 for williejackson.com (interim before the 11ty rebuild).
 - **frontend-design** — distinctive, production-grade frontend interfaces that avoid generic AI
   aesthetics.
 - **web-perf** — Core Web Vitals auditing via Chrome DevTools MCP (LCP/INP/CLS, render-blocking
