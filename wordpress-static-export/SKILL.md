@@ -108,6 +108,13 @@ Also:
 - **The Thesis theme prints its own `<head>` tags with no hooks.** To remove them, use an output
   buffer on `template_redirect` that rewrites only the part before `</head>`, front end only (skip
   admin, feeds, AJAX and REST).
+- **Thesis accessibility fixes (Lighthouse a11y + Agentic Browsing to 100, 2026-11-02).** Thesis
+  containers can't be `<main>`; put `role="main"` in the Content container's attributes field. The
+  Social Profiles box prints unnamed icon links with no filter, so add `aria-label` in the mu-plugin
+  output buffer. Section `<h4>`s styled by the skin get `aria-level="2"` instead of becoming `<h2>`,
+  which the skin renders 14 px larger and centers in focus mode. Iframes from embed scripts (Wufoo)
+  need `title` set in the script after `display()`. Running Lighthouse here: memory
+  `reference_lighthouse_on_claude_code_host`.
 - **Restore-test checks that pipe `curl | grep -q`** fail under `set -o pipefail`: grep exits
   early and curl gets SIGPIPE. Save to a file, then grep.
 
