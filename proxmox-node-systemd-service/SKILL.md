@@ -290,3 +290,7 @@ curl -s -m 3 -o /dev/null -w '%{http_code}\n' http://<lxc-lan-ip>:<port>/
 Only after confirming both the positive (Tailscale HTTPS works) and negative (plain LAN IP
 refused) cases is the deployment actually done. Skipping the negative check would have shipped
 an unauthenticated dashboard reachable by anything on the LAN, not just the tailnet.
+
+## Gotcha 6 addendum (2026-11-01) — n8n now warns that non-container installs are deprecated
+
+Bumping n8n 2.37.10 -> 2.45.7 (in-place `npm install -g n8n@2.45.7`, same bypass-Ansible procedure as above; data folder copied to `/root/n8n-data-pre-2.45.7-20261101` first, migrations ran clean, both active workflows and the krisp-transcript webhook still registered) now logs on startup that running outside a container is deprecated and a future version will require Docker. This directly threatens this skill's whole pattern for n8n specifically (native systemd service, no Docker) — when n8n forces the issue, it'll need its own Docker-based deployment note rather than following this skill. Back up the data directory before any in-place version bump; migrations are one-way.
