@@ -64,6 +64,7 @@ passes**. Each check below exists because a real export got past the earlier one
 | Every published post/page **and every URL in the site's own sitemaps** exists | `/author/<user>/` was missing. Seeding from the sitemap covers new page types automatically |
 | Missing required URLs are re-fetched directly before checking | wget **skips a page reached through a redirect** (`/consulting` → `/consulting/`): the child pages saved, the parent didn't |
 | Every `wp-content`/`wp-includes` asset referenced in `src`/`href`/`srcset` exists | A permission bug made nginx 404 **every** image, CSS and JS file. The export was 1.3 MB and **still passed the page checks** |
+| Assets named in **`data-*` attributes** are collected, fetched, and required too | The theme's YouTube embeds keep their custom preview image in `data-thumb` (a script swaps it in). wget never follows it and the first asset check never read it: 4 thumbnails 404ed on 11 live pages (2026-11-02) |
 | Feed exists and contains `<rss`; a 404 page exists | — |
 | No private hostname, `127.0.0.1` or tailnet suffix appears anywhere | — |
 
