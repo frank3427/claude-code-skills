@@ -595,3 +595,33 @@ silence, not an alert, and it happens *before* any RunSSH audit further down the
 Keeping hostnames (rather than switching to LAN IPs) still exercises the route real automation uses,
 and interception now shows up as a finding. **To reach a host that has Tailscale SSH on, use its LAN
 IP.** When testing, arm the revert from a path that can't itself be intercepted.
+
+## Roaming iPhone/iPad: one tunnel stall takes down ALL DNS, so the internet looks dead (2026-11-02)
+
+With Override DNS pointed at Pi-hole's 100.x address, Will's Apple devices send about 97% of their DNS
+over the tailnet, even at home. When the iOS client's tunnel stalls, every lookup fails. Tailscale
+shows **"DNS Unavailable" (`dns-forward-failing`)**, and Will sees "the internet is slow/broken" until
+he toggles Tailscale.
+
+**What actually breaks.** After a network change on T-Mobile-based cellular (Will's iPhone on T-Mobile,
+his iPad on Google Fi), the iOS client's UDP receive loop dies. The app then shows **"MagicSock
+Function Not Running" (`magicsock-receive-func-error`, ReceiveIPv4)**. Only a client restart recovers
+it. Reproduced 2026-11-02 at 4:31 PM CST: the iPad moved from home Wi-Fi to Fi and broke at once.
+
+**Diagnose it from Pi-hole, not from the phone:**
+- In pihole-FTL.db, count the device's 100.x queries per minute. An outage is a gap while the other
+  ~30 clients keep being served.
+- `journalctl -u tailscaled | grep 'peer \[<nodekey-prefix>\] disco key changed'` lists every
+  phone-side restart; each toggle is one line.
+- A burst of `new contact ... via=derp` lines marks the moment the path broke. The phone's home DERP
+  hopping regions (Denver, then Toronto) is a side effect, not the cause.
+- This is NOT the pve stale-peer case (memory `reference-pve-subnet-router-stale-peer-after-restart`).
+  That one is server-side, and a toggle doesn't fix it. This one is phone-side, and only a toggle fixes it.
+
+**Mitigation built (don't re-litigate):**
+- Will wanted ad-blocking on the go kept.
+- A second resolver behind the same tunnel wouldn't help, because the device's whole tailnet is down.
+- Adding Cloudflare as a second Override nameserver was declined in July (it bypasses filtering).
+- So the roaming devices take DNS from an iOS DNS profile pointing at a Cloudflare DoH Worker fed
+  with Pi-hole's lists, with "Use Tailscale DNS settings" turned off on that device only. See the
+  `pihole-lists-doh-worker` skill. Upstream bug report pending.
