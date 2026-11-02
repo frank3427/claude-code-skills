@@ -115,6 +115,15 @@ straight to the paired chat; the prompt is automatically told it's running as an
 job and to respond with exactly `[SILENT]` (nothing else) to suppress delivery when there's
 nothing to report — a real, working convention, not something to reinvent.
 
+**A DST change silently skips jobs (confirmed 2026-11-01, v0.20.6).** `next_run_at` is stored
+with a fixed UTC offset. After a DST change, any job whose stored time was computed before it is an
+hour off. At that tick the scheduler logs `next_run_at ... does not match its current cron expression
+... re-anchoring to <next> without firing`, so that run is **lost** (the weekly report missed 11-01).
+A one-shot day-of-year job re-anchors to next year, so it never fires. Fix it **after** the change:
+compare each job's `next_run_at` hour with its expression (jobs.json), and recompute any mismatch
+with `hermes cron edit <id> --schedule "<same expr>"`. That leaves the prompt, skills and delivery
+untouched.
+
 No dedup/idempotency built into `cron create` itself — an Ansible task wrapping it needs its own
 `hermes cron list | grep <name>` guard before creating, or a re-run duplicates the job.
 
