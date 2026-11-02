@@ -97,7 +97,33 @@ jsonc to undo).
 `wrangler pages deploy _site --project-name <name> --branch main`. Deploying to an existing Pages project
 is unaffected. Long-lived sites still go through dashboard Git integration (website-building-preferences §12).
 
+## A custom domain on a proxied zone: what the headers really mean (2026-11-01, williejackson.com)
+
+- **`cf-cache-status: DYNAMIC` on Pages HTML is normal.** That label describes the zone's CDN cache,
+  which by default stores only static extensions (`.css`, `.jpg`…), never HTML. Pages serves the HTML
+  from its own edge storage anyway: TTFB measured 0.12–0.16 s, no origin. Don't "fix" it with a Cache
+  Everything rule: deploys don't purge the zone cache, so edits would stay invisible until the TTL ran
+  out.
+- **`cache-control: public, max-age=0, must-revalidate`** is Pages' default for HTML, so a new deploy
+  shows at once (browsers revalidate by ETag).
+- **Zone settings override `_headers` on the custom domain.** The same file served
+  `max-age=86400` (from `_headers`) on `*.pages.dev` but `max-age=2678400` (31 days, the zone's
+  Browser Cache TTL) on the custom domain. Compare the two hostnames before blaming `_headers`.
+- **`! Header-Name` in `_headers` detaches a default header.** `! Access-Control-Allow-Origin` under
+  `/*` drops Pages' default open CORS.
+- **Cloudflare Fonts** (zone setting) rewrites a page's Google Fonts `<link>` at the edge into inline
+  `@font-face` from `/cf-fonts/…`, so the browser never contacts Google. The `<link>` in the source
+  is load-bearing; a `dns-prefetch` for `fonts.googleapis.com` is dead weight.
+- **Moving a domain from an origin to Pages.** Add the custom domain in the dashboard; it offers to
+  replace the existing proxied A record. A `www` → root redirect the old server did needs a zone
+  Redirect Rule (template "Redirect from WWW to root") plus `www` as a second custom domain.
+- **A zone-scoped token's reach.** The homelab's `CF_ZONE_TOKEN` reads DNS, custom firewall rules and
+  page rules, but gets "not authorized" for redirect/cache/transform rulesets and "Authentication
+  error" for zone settings.
+
 ## Related
+
+- `wordpress-static-export`: a WordPress site exported to a Git-integrated Pages project.
 
 For Workers Cron Trigger gotchas (day-of-week numbering, testing
 `scheduled()` against real bindings, subrequest-limit sizing) and R2

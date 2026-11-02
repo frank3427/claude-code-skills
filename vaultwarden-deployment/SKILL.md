@@ -5,6 +5,12 @@ description: This skill should be used when deploying Vaultwarden (self-hosted B
 
 # Vaultwarden deployment (Docker, single-user personal instance)
 
+> **The instance this was built from is retired (2026-11-01).** It held one secure note, Infisical had
+> already taken over the secrets role, and dfw itself was being retired. Data archived to R2
+> `immich-archive/vaultwarden/`; removed by dfw-ansible `vaultwarden-retire.yml`. The mechanics
+> below stay valid for a future deployment. Before standing one up again, ask whether Infisical
+> (fleet secrets) or Will's own password manager already covers the need.
+
 Built and verified 2026-08-15 on a Vultr VPS (`dfw`) as the secrets store for a broader
 multi-service box. Docker is fine here specifically because this is a personal/single-purpose
 VPS, not part of the homelab's Proxmox fleet (where Docker is banned outside LXCs/VMs — see

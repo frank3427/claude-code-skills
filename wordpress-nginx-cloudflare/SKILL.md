@@ -5,6 +5,12 @@ description: This skill should be used when deploying or migrating a WordPress s
 
 # WordPress on nginx + PHP-FPM + MariaDB, behind Cloudflare
 
+> **2026-11-01:** williejackson.com no longer runs this stack publicly. It's a static copy on
+> Cloudflare Pages, exported from a private WordPress on homelab CT 144 (see
+> `wordpress-static-export`). Everything below still describes how a *public* WordPress origin
+> behind Cloudflare is built, and dfw ran it until 2026-11-01. A copied 2750/0640 site tree needs
+> `www-data` in the site user's group, or nginx 404s every static file.
+
 Covers a from-scratch WordPress deployment (not Docker, not a managed panel) with Cloudflare
 as the sole public entry point, plus the specific gotchas hit migrating a real site off
 GridPane onto a fresh Debian host.

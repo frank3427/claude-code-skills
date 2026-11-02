@@ -5,6 +5,12 @@ description: This skill should be used when building monitoring for a self-hoste
 
 # Agent delivery canary and mutual liveness
 
+> **2026-11-01:** with Olu and dfw retired, the hermes watcher runs from **ansible-ctrl**
+> (homelab-ansible `hermes-peer-watch.yml`; state copied over so restart detection continued). The
+> dfw copy sent the bot token in the curl URL, so it showed in `ps`. The port sends it on stdin
+> (`--config -`). Do the same in any new watcher. Proven there with a staged stale document
+> (alert) and the real one (silent), in `APW_TELEGRAM_STUB=1` mode.
+
 Built 2026-09-04 across both of Will's agent hosts after he asked *"how have olu and chuka been
 running? things have been quiet thankfully"* — and the check found one MCP server broken for two
 days and, earlier the same week, a Home Assistant auth failure standing 2.5 days and an MCP

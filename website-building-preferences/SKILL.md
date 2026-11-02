@@ -286,7 +286,7 @@ Check:       <URLs to eyeball>
 ---
 
 ## 13. Known projects (move these into each repo's own CLAUDE.md)
-- **williejackson.com.** WordPress → 11ty, about 100 posts. Flat root-level permalinks with no dates; preserve them exactly. RSS GUIDs as `?p=<wpId>`. Sveltia CMS for mobile editing. Uses the jackson-seo plugin. Aesthetic direction is minimal/clean; typeface still open. Needs positioning content tying Will to talent management.
+- **williejackson.com.** *Status 2026-11-01:* an **interim** static copy on Pages (Git-integrated project `williejackson-com-static`, repo `jackson2w/williejackson-com-static`, `public/`), exported from a private WordPress on homelab CT 144 (`wordpress.tail922cee.ts.net/wp-admin`, Tailscale only). That WordPress is the import source for the rebuild below. See `wordpress-static-export`. The plan stays: WordPress → 11ty, about 100 posts (58 published as of 11-01). Flat root-level permalinks with no dates; preserve them exactly. RSS GUIDs as `?p=<wpId>`. Sveltia CMS for mobile editing. Uses the jackson-seo plugin. Aesthetic direction is minimal/clean; typeface still open. Needs positioning content tying Will to talent management.
 - **abernathymagazine.com.** Static redesign, repo `jackson2w/abernathymagazine`, auto-deploys on push to `main`. **Auto-commit and push after every change** (project override of §12). Atlantic-inspired. GRT at 18px base / 640px text column / 1080px image column. Playfair Display (headings), Source Serif 4 (body), Inter (UI labels only). Link-hover accent `#e7131a`. Italic serif bylines, centered under the title, author name linked to the archive. No image hover effects.
 - **photos.jackson2w.com.** Photo pipeline: AVIF, Display-P3, blur-up LQIP, EXIF extraction via prepare scripts.
 
