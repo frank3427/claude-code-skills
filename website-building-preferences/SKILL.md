@@ -204,6 +204,12 @@ GRT values are the **max-viewport** sizes. Generate Utopia `clamp()` steps so th
 - Descriptive `alt` on every `<img>` (`alt=""` only for decorative images)
 - `<time datetime="YYYY-MM-DD">` for dates; `aria-label` on icon-only links and buttons
 - Visible focus styles; full keyboard navigation; nav and footer get `data-pagefind-ignore`
+- **Target: Lighthouse/PageSpeed Accessibility 100 and Agentic Browsing 100** (Will, 2026-11-02). Agentic
+  Browsing (Lighthouse 13+) scores a well-formed accessibility tree plus CLS, so the rules above are
+  most of it; also `title` on every `<iframe>` (including ones embed scripts create) and `width`/`height`
+  on every `<img>`. Verify against **every** page, not a sample: on williejackson.com, 5 of 58 pages had
+  content-level failures the template runs never showed. Running Lighthouse here: memory
+  `reference_lighthouse_on_claude_code_host` (the PSI API needs a key)
 
 ## 9. SEO and sharing
 - Every page: description (150–160 chars), canonical, OG title/description/url/type (`article` for posts), `og:image` at 1200×630.
