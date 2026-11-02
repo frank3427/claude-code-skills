@@ -604,6 +604,31 @@ drop (35k → ≤20k expected here) and the reply should still land.
 **Control:** another job with MCP still on (here the gym jobs, ~26.7k at start) shows that the drop
 came from the trim, not from a quieter day.
 
+## Web dashboard + Desktop app remote backend (built 2026-11-02, v0.20.6)
+
+`hermes dashboard` (UI + API) / `hermes serve` (API only) on port 9119 is what both the browser and
+Hermes Desktop's "Remote gateway" connect to; the Telegram gateway is a separate process. Facts from
+the source:
+- **Auth:** a non-loopback bind, or a non-loopback `HERMES_DASHBOARD_PUBLIC_URL`, engages the gate,
+  and with no provider it fails closed. The bundled `dashboard_auth/basic` reads
+  `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `_PASSWORD_HASH` (scrypt, contains `$`, so single-quote it
+  in a systemd EnvironmentFile) / `_SECRET`. The login is `POST /auth/password-login` with
+  `{"provider":"basic","username","password"}`. `/api/status` is public and shows `auth_required`
+  and `auth_providers`.
+- **Tailscale Serve, not `--host 0.0.0.0`:** bind 127.0.0.1 and set PUBLIC_URL to the ts.net
+  name. Serve's peer is loopback and the Host header matches, so both guards pass.
+- **No second scheduler:** the dashboard's own cron ticker and orphan-gateway reaper run only with
+  `HERMES_DESKTOP=1`, the app's local backend, so a server dashboard can't double-fire jobs.
+- **Build the web UI first:** it isn't shipped built. Run `npm run build` in `web/` to produce
+  `hermes_cli/web_dist` (gitignored), then use `--skip-build`. The build takes ~40 s; the dashboard
+  idles at ~355 MB.
+- **Give it the gateway's environment** (gateway.env for the Agent Vault proxy, the same
+  ReadWritePaths), because dashboard chats run agent turns.
+- **YOLO skips every approval, plugin `approve` gates included** (`request_tool_approval` →
+  `_run_approval_gate`). A Shift+click on Desktop's zap sets global `approvals.mode: off`, which
+  also affects Telegram and cron. There is no config option to disable the toggle, so pin
+  `approvals.mode` and watch it for drift.
+
 ## Telegram identity
 
 `getMe` against the live bot token returns `{"id": 8810663021, "username": "DFWHermesBot",
