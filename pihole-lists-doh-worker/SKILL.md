@@ -97,3 +97,26 @@ Pattern (`roaming-dns-worker/src/cache.js`, 17 node:test cases with a fake clock
 - **Benchmark interleaved** (blocked, cached, unique names, round-robin) over one kept-alive
   connection. Back-to-back batches pick up network drift: one run showed blocked names at 57 ms
   against 31 ms interleaved.
+
+## Per-device rollout and proof (iPad and iPhone, 2026-11-02)
+
+Steps on each device, after installing the profile from the temporary tailnet-only link:
+1. Under Settings > General > VPN & Device Management > DNS, **select** the profile. iOS shows it as
+   "Unknown"; that's normal.
+2. In the Tailscale app, turn off **Use Tailscale DNS settings**. The app then shows an
+   "Advanced DNS Settings" page (None / Automatic / Custom). Leave it on **Automatic**; that page
+   only appears when Tailscale DNS is off.
+3. **Prove it on cellular with two Safari loads:** a blocked name (`doubleclick.net`) should fail with
+   "can't connect", and a homelab name only the Worker knows (`grafana.jackson2w.dev`) should load
+   over the tunnel. "No more Pi-hole queries from the device's 100.x address" proves only where
+   lookups stopped going. It can't tell the Worker apart from a silent fallback to carrier DNS.
+4. Take the profile link down (`roaming-dns-profile.sh --stop`). Pi-hole's per-minute counts for the
+   device's 100.x address should stop at the moment Tailscale DNS was turned off.
+
+## Blocked-answer TTL: 300 s, not Pi-hole's 2 s
+
+Pi-hole uses 2 s so allowlist edits apply instantly. The Worker's lists only change at the nightly
+sync, so 2 s just makes apps re-ask for blocked trackers (more requests, more radio wake-ups). The
+DoH test asserts the 300. Keep the sync **nightly** even though blocklists change weekly: it only
+deploys on a content-hash change, and it's what makes the owner's own allow/deny edits follow the
+device by the next morning.

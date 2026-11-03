@@ -740,3 +740,27 @@ Built-in MEMORY.md/USER.md stays on alongside. Checking `hermes memory status` a
   `AGENT_VAULT_NETWORK_ALLOWLIST`. The client is aiohttp with `trust_env=True` set by the library itself (unlike the
   bare `aiohttp.ClientSession()` calls in the Home Assistant tool above), so it honors gateway.env's proxy. Its urllib `/version` probe does not (407): harmless, it only disables
   `update_mode='append'`.
+
+
+## Gotchas found 2026-11-02 (v0.20.6 pinned build)
+
+- **Never press the Desktop app's "Update Hermes" button** ("Backend out of date"). It runs
+  `hermes update`, which tracks origin/main, not a release, and parks the carried local commits.
+  Version changes go through `hermes-checkout-pin-install.yml`. The Desktop's version check is
+  separate from `updates.check`, so turning that off doesn't hide the banner.
+- **Edge TTS (the default when config.yaml has no `tts:` block) fails with a WebSocket 403 on
+  edge-tts 7.2.7.** Microsoft rejects old client versions. It fails without the proxy too, so it's
+  not Agent Vault. edge-tts 7.3.1 works, and Hermes v0.22.5 pins it. Telegram voice replies are
+  `/voice on` (reply in voice to voice notes) or `/voice tts` (every reply). They need the `tts`
+  toolset and ffmpeg.
+- **An OAuth MCP server that fails at gateway start is parked "until credentials change"** and is
+  never retried by the 5-minute self-probe. After fixing the cause (here, an Agent Vault deny on the
+  token endpoint `api.krisp.ai/platform/v1/oauth2/*`), restart the gateway. A 403 on the refresh
+  came from the vault and never reached the provider, so the refresh token was still good.
+- **Plugin approvals are keyed `plugin_rule:<tool>:<sha256(message)[:12]>`.** Embed the command in
+  the message so "session" or "always" covers only that call. `command_allowlist: [execute_code]`
+  (one "always" press) silences the built-in whole-script prompt forever, but plugin hooks still
+  fire. Details are in the agent-command-approval-gate skill.
+- **"Auxiliary approval: using ..." in agent.log** right before a `pending_approval` tool error means
+  the BUILT-IN detector plus smart mode flagged a command, not a plugin. In a cron session it can
+  never be approved.
