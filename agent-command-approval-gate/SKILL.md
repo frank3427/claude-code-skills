@@ -281,6 +281,38 @@ loaded build**, and nothing here checks that third gap. Settle it from outside w
 `ActiveEnterTimestamp` against the plugin's mtime — one command, and it beats any agent's account of
 itself.
 
+## Hermes: what an "always" press actually covers (checked 2026-11-02)
+
+Plugin approvals don't share a key with the built-in patterns. `tools/approval.py` keys a plugin
+`{"action": "approve"}` as `plugin_rule:<rule_key>` when the hook gives one, and otherwise as
+`plugin_rule:<tool>:<sha256(message)[:12]>`. **Put the command text in the message and don't
+set a rule_key.** Then a "session" or "always" press covers only that exact call, never the
+whole class. A stable message, or a rule_key, turns one careless "always" into a permanent hole.
+
+The built-in `execute_code` guard is different: it uses the fixed key `execute_code`, so one
+"always" press allowlists every script forever (`command_allowlist: [execute_code]` in
+config.yaml). Plugin hooks still fire on execute_code, so a gate built as a plugin survives that
+press, while a gate that relies on the built-in prompt does not. **Before trusting any Hermes
+gate, read `command_allowlist` in config.yaml.**
+
+### A gate for an API-backed skill: cover every route, not just the CLI
+
+On the Google gate (hermes `google-actions-approval`), the skill's CLI was only one of four
+routes. The agent had already used raw `googleapiclient` code: it listed calendars, which the
+CLI can't do. The routes are:
+
+- the CLI, by command position;
+- the wrapped binary (`gws`);
+- raw client calls (`events().delete(`) in execute_code, heredocs, `python -c`, and **.py files
+  the terminal runs**, which the hook reads at call time;
+- raw HTTP with a mutating method.
+
+Two traps:
+
+- Match `.events().update(`, not a bare `.update(`, or every Python `dict.update` prompts.
+- The shell variable the skill documents (`$GAPI calendar delete`) sits in argv[0]
+  unexpanded, so a token that is a bare `$VAR` has to count as the CLI.
+
 ## Review checklist
 
 - [ ] Matching is command-position, not substring, for anything that appears in ordinary prose
@@ -290,7 +322,8 @@ itself.
 - [ ] Both directions covered: gated shapes prompt, read-only mentions stay silent
 - [ ] Approval description bounded (≤512 for OpenClaw), no `undefined` interpolation
 - [ ] `timeoutBehavior: "deny"`
-- [ ] Every send/mutation route is gated — a new route added later silently defeats the gate
+- [ ] Every send/mutation route is gated — a new route added later silently defeats the gate (for API skills: CLI, wrapped binary, raw client code incl. script files, raw HTTP)
+- [ ] Hermes: approval message embeds the command, no rule_key; `command_allowlist` read
 - [ ] Live-fire run after the restart that loads it, all three cases
 - [ ] A vendored copy plus drift detection exists if the plugin lives outside IaC
 - [ ] The drift check has a scheduled consumer, not just an alert
