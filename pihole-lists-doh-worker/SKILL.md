@@ -68,3 +68,32 @@ SSID that gets Pi-hole: here AMPJ5, AMPJ4712 and AMPJ-IoT.
 (env), never argv.
 
 **Known differences from Pi-hole:** no CNAME deep inspection, and groups are ignored.
+
+## Answer cache (added 2026-11-02): build it, it pays
+
+**Don't skip the cache on the theory that the client already caches by TTL.** On this fleet, Pi-hole
+answered about 78% of an iPhone's lookups from cache, and half of those were *stale* hits (Pi-hole's
+optimistic serving). A Worker without a cache pays the upstream round trip (+20-50 ms) on every one.
+Check the resolver's own data first: FTL `query_storage.status` 3 = cache, 17 = stale cache,
+`reply_time` per query.
+
+Pattern (`roaming-dns-worker/src/cache.js`, 17 node:test cases with a fake clock, upstream and edge):
+
+- **Key:** `name|qtype|qclass|DO bit|CD bit`. The DO bit lives in the OPT record's TTL field.
+- **Cache only NOERROR and NXDOMAIN without TC.** Negative TTL = min(SOA TTL, SOA MINIMUM). Clamp to
+  1 day. TTL 0 means don't cache.
+- **Serving:** copy the bytes, set the asker's ID, copy the asker's question bytes (mixed case), and
+  rewrite every non-OPT TTL (age-decremented, or 30 when stale).
+- **Serve-stale for up to a day,** with one background refresh per key via `ctx.waitUntil`. A failed
+  refresh keeps the old entry.
+- **Two layers:** the isolate's Map (LRU, 10k entries), then `caches.default`.
+- **The Cache API works on `*.workers.dev`** (verified 2026-11-02 with a real put then match, reported
+  by `/health` as `edge_cache`), even though the docs only promise it on custom domains. Measure it;
+  don't move to a custom domain on the docs' word.
+- **Add an `x-cache: hit|stale|miss` response header.** It's the only cheap way to see the cache
+  working from outside when Analytics Engine has no reader.
+- **Live stale test:** find a name with a TTL of a few seconds (www.microsoft.com was 2 s), ask once,
+  sleep past its TTL, then ask three times. You should see hit, then stale with TTL 30, then hit.
+- **Benchmark interleaved** (blocked, cached, unique names, round-robin) over one kept-alive
+  connection. Back-to-back batches pick up network drift: one run showed blocked names at 57 ms
+  against 31 ms interleaved.
