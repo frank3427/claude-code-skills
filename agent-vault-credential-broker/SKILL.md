@@ -1,6 +1,6 @@
 ---
 name: agent-vault-credential-broker
-description: This skill should be used when deploying or debugging Infisical's Agent Vault (a self-hosted, research-preview credential broker that intercepts an agent's outbound HTTPS calls via a local MITM proxy and injects real API keys so the agent process never holds them) — including provisioning a new instance, wiring it in front of an existing agent (OpenClaw, Hermes, a coding agent), the `agent-vault` CLI (vault/service/agent/run subcommands), or debugging a broken cutover. Trigger phrases include "agent vault", "credential broker", "get.agent-vault.dev", "agent-vault run", "AGENT_VAULT_TOKEN", "AGENT_VAULT_ADDR", "AGENT_VAULT_VAULT", "mitm-ca.pem", "agent-vault server", "unmatched_host_policy", "openclaw-on-vps.mdx", "hermes-on-vps.mdx", "placeholder api key vault", "__anthropic_api_key__", "Failed to set up mount namespacing", "agent process never holds credential", "MITM proxy inject api key", "vault service add catalog", "netguard blocked by network policy", "AGENT_VAULT_NETWORK_ALLOWLIST", "AGENT_VAULT_ALLOW_PRIVATE_RANGES", "agent vault 502 internal host", "agent vault tailnet private ip blocked".
+description: This skill should be used when deploying or debugging Infisical's Agent Vault (a self-hosted, research-preview credential broker that intercepts an agent's outbound HTTPS calls via a local MITM proxy and injects real API keys so the agent process never holds them) — including provisioning a new instance, wiring it in front of an existing agent (OpenClaw, Hermes, a coding agent), the `agent-vault` CLI (vault/service/agent/run subcommands), or debugging a broken cutover. Trigger phrases include "agent vault", "credential broker", "get.agent-vault.dev", "agent-vault run", "AGENT_VAULT_TOKEN", "AGENT_VAULT_ADDR", "AGENT_VAULT_VAULT", "mitm-ca.pem", "agent-vault server", "unmatched_host_policy", "openclaw-on-vps.mdx", "hermes-on-vps.mdx", "placeholder api key vault", "__anthropic_api_key__", "Failed to set up mount namespacing", "agent process never holds credential", "MITM proxy inject api key", "vault service add catalog", "netguard blocked by network policy", "AGENT_VAULT_NETWORK_ALLOWLIST", "AGENT_VAULT_ALLOW_PRIVATE_RANGES", "agent vault 502 internal host", "agent vault tailnet private ip blocked", "credential set argv", "/v1/credentials", "copy credential between vaults", "Tunnel connection failed: 407", "urllib proxy auth", "one vault per consumer".
 ---
 
 # Agent Vault (Infisical) — credential broker for agent processes
@@ -203,6 +203,14 @@ pattern transfers to another.
   for the specific var you need and treat proxy-shaped values as unsafe to display, or better,
   test functionally instead (source the env file into a subshell and make a real call, per the
   credential-rotation-protocol skill's safe toolkit, rather than ever printing resolved env).
+  **Recurred 2026-09-07 through a third command shape:** `grep -E '^(HTTPS?_PROXY|NO_PROXY)='
+  gateway.env`, run to compare a template change against the live file, printed the live
+  `hermes-gateway` token. `grep` is not in the hook's blocked list and the *intent* was a
+  non-secret proxy host:port. The only safe reads of an Agent-Vault env file are key names
+  (`cut -d= -f1`) and counts; anything that prints a `*_PROXY=` **value** is a token dump.
+  Rotated the same sitting via the recipe above (`agent rotate --token-only` → one-time file →
+  re-render playbook → restart); the old process's own `407`s in the minute before restart were
+  the proof the old token had died.
   Remediation if this happens: rotate the exposed agent's token immediately (`agent-vault agent
   rotate <name> --token-only`, piped straight into a fresh token file, never printed — see that
   command's own `--token-only` flag), re-render the consuming service's env via its existing
@@ -348,3 +356,173 @@ trips Claude Code's own auto-mode safety classifier, regardless of encoding — 
 run that one command themselves rather than retrying. A plain `cp` for backup/restore of the
 same file is not blocked (it's not writing new/modified content). Creating a brand-new file
 (e.g. a fresh `AGENT_VAULT_TOKEN`/`ADDR`/`VAULT` env file) has not been observed to trip it.
+
+## `HTTPS_PROXY` with a token and no password silently breaks every Python `requests` client
+
+**Found 2026-09-06 on Hermes, after roughly an hour spent blaming the wrong component three
+times.** The vendor guide's env shape is a URL with a **username and no password**:
+
+```
+HTTPS_PROXY=http://{{ agent_vault_token }}@{{ proxy_host_port }}
+```
+
+`urllib3` v2 (2.7.0 here, with `requests` 2.33.0) builds Basic proxy auth **only from a
+`user:pass` pair** — given bare `user@host` it sends no `Proxy-Authorization` header at all, and
+the proxy answers `407 Proxy Authentication Required`. `curl` sends the header regardless, so the
+two disagree about whether the proxy works.
+
+**The one-character fix** — a colon, making the empty password explicit:
+
+```
+HTTPS_PROXY=http://{{ agent_vault_token }}:@{{ proxy_host_port }}
+HTTP_PROXY=http://{{ agent_vault_token }}:@{{ proxy_host_port }}
+```
+
+Fix it in the **Ansible template**, then re-run the playbook and restart the unit. A hand-edit to
+the live env file is reverted by the next run — the controller is authoritative.
+
+### Why this is expensive to diagnose rather than merely obscure
+
+- **It is partial.** The agent's *model* calls keep working, because that transport uses a
+  different HTTP library. The service looks healthy, answers questions, and only its
+  `requests`-based tools (web search, fetchers, MCP clients) fail. Nothing points at a proxy.
+- **The error names the wrong thing.** `ProxyError('Unable to connect to proxy')` reads as an
+  egress or network fault. Direct egress works fine, which makes it look like the *destination*
+  hosts are blocked. Two wrong conclusions followed: "egress is firewalled", then "those hosts
+  need registering as vault services."
+- **`curl` through the same proxy exonerates it**, so the obvious probe reinforces the wrong
+  answer. Worse, a `curl` carrying *no* credentials returns the same `407`, which reads as "the
+  proxy is broken" — a healthy `agent-vault` was restarted on exactly that evidence.
+
+### The probe that actually settles it
+
+Run the failing client's **own library**, in the unit's **own environment**, printing the
+exception type with credentials scrubbed:
+
+```bash
+sudo bash -c 'set -a; source <gateway env path>; set +a; <venv>/bin/python3 - <<PY
+import requests, re
+def clean(s): return re.sub(r"//[^@/]*@", "//<redacted>@", str(s))[:200]
+try: print("OK", requests.get("https://mcp.exa.ai", timeout=12).status_code)
+except Exception as e: print(type(e).__name__, "|", clean(e))
+PY'
+```
+
+A `407` there is this bug. Confirm by retrying with the proxy URL rebuilt as `user:@host` — if
+that returns a real status code, it is settled without changing anything yet.
+
+**The general rule:** when one client through a proxy works and another does not, the proxy is
+not the variable. Reproduce with the **failing library**, never with `curl`.
+
+## Setting a credential without putting it in argv — use the API, in-process (2026-10-03)
+
+`agent-vault vault credential set` only takes `KEY=VALUE` as an argument (no `--stdin`, no file),
+so the value would sit in the process list. The CLI is a thin client for
+`POST {address}/v1/credentials` with `{"vault": "<name>", "credentials": {"KEY": "<value>"}}`
+and `Authorization: Bearer <token>`. Both `address` and `token` are in `/root/.agent-vault/session.json`.
+Do it in one Python process on the broker host, reading the value from stdin or from another
+vault's `GET /v1/credentials?vault=<v>&reveal=true&key=<K>`. Then read it back and compare by
+**hash only**; never print it. Used twice on 2026-10-03: copying `LUNAROUTE_API_KEY` vault-to-vault
+inside the broker, and piping `HINDSIGHT_API_KEY` from ansible-ctrl's `infisical-get.sh` over SSH stdin.
+
+## One vault per consumer, even when the credential is shared
+
+An identity with `<vault>:proxy` can use **every** service in that vault. Hindsight needed only
+LunaRoute, but Chuka's `hermes` vault also holds Telegram, Home Assistant, n8n and Groq. So it got
+its own vault, `hindsight`, holding just the `lunaroute` service with a copied key, and the
+identity `hindsight-server` has `hindsight:proxy` only. The key still lives only in the broker; the
+blast radius of a compromised consumer shrinks to that one service.
+
+## Python `urllib` gets 407 through the proxy even with the `token:@` form
+
+`urllib.request` does not send proxy credentials on an HTTPS `CONNECT` built from the env
+userinfo. It fails with `Tunnel connection failed: 407 Proxy Authentication Required`, even with
+the trailing-colon URL from the section above. `httpx`, `requests` (with the colon) and `aiohttp`
+with `trust_env=True` all work. Seen 2026-10-03: Hermes's Hindsight plugin probes `/version` with
+urllib, gets 407, and falls back to per-process document IDs, while its real calls (aiohttp) work.
+Check which HTTP library a client uses before assuming the proxy covers it.
+
+## Don't `head`/`cat` files in `~/.agent-vault/ca/`
+
+Only `ca.crt.pem` is public. `ca.key.enc` is the CA private key, encrypted under the master
+password. Listing the directory with `head -1` of each file printed its first line into a session
+transcript (2026-10-03; harmless while the master password stays private). To fetch the public
+cert for a consumer's trust bundle, read **only** `ca.crt.pem`, e.g. an Ansible `slurp` with
+`delegate_to: agent-vault`.
+
+## Upgrading, telemetry, and the two products named "Agent Vault" (2026-10-11)
+
+**If the host is Ansible-managed, backport the version pin in the same session.** `homelab-ansible`'s `agent-vault-install.yml` pins the binary by version and sha256 (tarball + extracted binary). A hand upgrade changes only the live host; the next real playbook run reinstalls the old pin. Happened 10-11 → caught 10-17 (fixed in `9004af5`): take the tarball sha from the release `checksums.txt`, confirm the extracted binary sha equals the live `/usr/local/bin/agent-vault`, bump all three vars, `--check` must be changed=0.
+
+- **In-place upgrade, 0.39.1 → 0.40.0, verified.** Back up `/usr/local/bin/agent-vault`, download
+  `agent-vault_<v>_linux_amd64.tar.gz` and `checksums.txt` from the GitHub release, then run
+  `sha256sum --ignore-missing -c`. Verify the signature with cosign wherever cosign is available,
+  using the command in the release notes (`--bundle checksums.txt.sig`). Then `install -m 755`
+  and `systemctl restart agent-vault`. The vaults, services and credentials in the database all
+  survive. **Send Olu and Chuka an fyi before the restart**: Chuka's Telegram long-poll drops
+  once and reconnects within 5 s.
+- **Telemetry is on by default** (`--telemetry` defaults to true; it sends anonymous usage data to
+  PostHog). Turn it off by adding `AGENT_VAULT_TELEMETRY=false` to the unit's EnvironmentFile.
+  Verify it from `/proc/<pid>/environ`, not from the file.
+- **Two different products share the name.** Infisical's docs at
+  `infisical.com/docs/documentation/platform/agent-vault/*` describe a *platform-integrated*
+  Agent Vault: access bundles and sessions in the Infisical UI, a proxy enrolled with
+  `infisical agent-vault proxy --enrollment-token`, listening on port **17323**, and agents
+  launched with `infisical agent-vault run --session-token`. It is a separate product from the
+  standalone `agent-vault` server (`docs.agent-vault.dev`, ports 14321/14322). Its sessions expire
+  and can be revoked, which the standalone server's agent tokens can't. As of 10-11 Infisical
+  labels it a preview and "not recommended for production". Don't follow its quickstart against
+  the standalone server.
+- **Strict deny mode (`unmatched_host_policy`) has no CLI command in 0.40.0.** It is a web-UI
+  toggle ("Strict deny mode") backed by `GET`/`PATCH /v1/vaults/<vault>/settings` with
+  `{"unmatched_host_policy": "deny"|"passthrough"}`. From the server host, use the CLI's session
+  (`/root/.agent-vault/session.json`: `token`, `address`), passing the bearer header to curl on
+  stdin (`--config -`). Before switching, add every legitimate un-credentialed host as
+  `--auth-type passthrough` (no behaviour change), then probe as the agent user with its env:
+  covered hosts 200, an unknown host 403. Deny applies only to traffic that goes through the
+  proxy; anything that ignores `HTTPS_PROXY` and has open egress goes direct. Done for `hermes`
+  2026-10-27 after a week of watching unmatched hosts. **A week of traffic is not the full list:**
+  the same day it turned out Chuka's 3x/week gym-parking API (`ogr-api.offstreet.io`) never ran
+  while the watcher was up. Before switching, also read the agent's cron jobs and the skills they
+  load (`~/.hermes/cron/jobs.json`, the SKILL.md files they name) for every host they call.
+  **OAuth-backed tools refresh on a different host than they call.** Google calls
+  www.googleapis.com and refreshes at oauth2.googleapis.com. Krisp MCP calls mcp.krisp.ai and
+  refreshes at api.krisp.ai/platform/v1/oauth2/token. A week of watching can't show the refresh
+  host, because it is only hit when the access token expires. After the switch, the first expiry
+  fails, and the tool looks broken days later. Read each tool's OAuth metadata
+  (`/.well-known/oauth-authorization-server`) and allow its `token_endpoint`, path-scoped.
+  Hermes then parks the MCP server "until credentials change", so after the fix, restart the
+  gateway; don't wait for the 5-minute probe.
+- **Coverage audit.** Traffic to a host that no service in the vault covers passes through
+  untouched under the default policy. So "the agent's traffic goes through the proxy" does not
+  mean "its keys are brokered". Compare `agent-vault vault service list --vault <v>` against the
+  hosts the agent actually calls. A MITM log line for a host with no matching service means the
+  agent still holds that key itself.
+- `agent-vault vault list` prints a box-drawn table with ANSI codes. Don't parse it with awk;
+  name the vaults explicitly.
+
+## Moving an agent's remaining keys into the vault (OpenClaw on dfw, 2026-10-12)
+
+Moved 7 keys in about 5 minutes with 3 restarts. Everything below was verified live.
+- **Two credentials on one host** (Cloudflare's API token and email token both go to
+  `api.cloudflare.com`): an auth type can inject only one header value per host. Use
+  `auth: passthrough` plus two `substitutions` with `in: [header]`, each with its own placeholder
+  (`__cloudflare_api_token__`, `__cloudflare_email_token__`). The agent sends
+  `Authorization: Bearer <placeholder>`, and the broker swaps in whichever value matches.
+- **git over HTTPS** sends `Authorization: Basic base64(user:token)`, which substitution can't
+  match. Add a separate `github.com` service with `type: basic`, with `username` pointing at a
+  credential holding the literal `x-access-token` and `password` at the token. Private
+  `git ls-remote` then works with no credential helper. `api.github.com` is a separate `bearer` service.
+- **Test each service before the swap**, as root on the agent host, using the gateway's own
+  wrapper: `set -a; . <agentvault.env>; agent-vault run --vault <v> -- curl -H "<header with
+  placeholder>" <url>` should return 200. The same curl with `env -u HTTPS_PROXY` must fail
+  (401/404/422). That failure is the control proving the 200 came from the vault.
+- **Before swapping a path-substituted key** (Telegram), check that the process has no direct
+  sockets to the provider's IP ranges (`ss -tnp | grep 149.154.`). A client that bypasses the proxy
+  sends the placeholder straight upstream and goes offline. Success signal: OpenClaw logs
+  `starting provider (@<botname>)`, which only happens after getMe resolves.
+- Bearer/api-key services take over live traffic **as soon as they're added**, before any swap.
+  So copy the value first and compare hashes, then add the service. Add the primary model
+  provider's service last, right before its own swap.
+- Restart order: the low-risk keys together, then chat, then the model provider. Write the planned-restart marker
+  (`/root/state/openclaw-planned-restart`) before each hand-run restart.

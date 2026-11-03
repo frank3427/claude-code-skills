@@ -257,3 +257,31 @@ Get the raw row with a small Python script (stdlib `sqlite3`, no CLI tool needed
 to a file — safer than threading the value through shell command substitution across an SSH hop.
 `execution_entity` (id, workflowId, status, startedAt, stoppedAt) is plain columns and queryable
 directly; only `execution_data.data` needs the `flatted` decode.
+
+## Retiring an unused credential on SQLite with no API key (2026-09-12, n8n 2.37)
+
+The CLI can't delete credentials. The public API needs a user API key, and creating one just to delete
+something is a new credential path. Using the UI is fine if a human is present. Otherwise:
+
+1. **Prove it's unused, by id AND by name**, read-only via Python's stdlib `sqlite3` with
+   `file:…?mode=ro`, since the `sqlite3` CLI is often not installed. Check `workflow_entity.nodes`,
+   `workflow_history.nodes`, and **every** table with a credential column.
+2. **Map the foreign keys first**, because 2.x grew many tables: `pragma foreign_key_list(<t>)` for
+   each table referencing `credentials_entity`. On 2.37:
+   - `shared_credentials`, `credential_dependency`, `agent_credential_dependency` and
+     `dynamic_credential_*`: CASCADE
+   - `chat_hub_*`: SET NULL
+   - `instance_credential_assignment`: **RESTRICT**, so it must have no row for the target
+3. **Take an encrypted backup**, loading the env from its file inside a root shell so the encryption
+   key never goes on a command line:
+   `bash -c 'set -a; . /root/.config/n8n.env; set +a; exec runuser -u n8n -m -- n8n export:credentials --id=<id> --output=<dir>/cred.json'`.
+   Confirm its `data` is still an encrypted string.
+4. **Stop n8n**, copy `database.sqlite`, `-shm` and `-wal` together, then delete in one transaction with
+   `pragma foreign_keys=ON` (SQLite's default is **off**, so cascades wouldn't run). Assert that exactly
+   1 row was deleted and the dependent rows went to 0, otherwise roll back.
+5. **Start n8n** and poll `/healthz` for 200 (about 5 s downtime), then confirm the other credentials and
+   active workflows are intact.
+
+`Failed to start Python task runner in internal mode … virtual environment is missing` at startup is a
+long-standing, benign message on npm installs without the Python runner. Check whether it predates a
+change before attributing it to one.

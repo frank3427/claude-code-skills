@@ -27,7 +27,7 @@ their repository added first: **Settings → Apps → ⋮ (store view) → Repos
 repo URL (e.g. `https://github.com/hassio-addons/repository` for the widely-used "Home Assistant
 Community Add-ons" set). It then appears in the store under that repo, installs like any other app.
 
-## No normal shell, no cloud-init, no guest agent
+## No normal shell, no cloud-init (guest agent: off until you enable it)
 
 HAOS is a locked-down appliance OS, not a general Debian box:
 - No SSH/root shell by default (advanced users can enable an SSH add-on, but treat this as
@@ -41,9 +41,14 @@ HAOS is a locked-down appliance OS, not a general Debian box:
   refused, but plain `http://<ip>` (port 80) serves the real HA frontend fine — don't read the
   refused 8123 as the guest being down. Check both ports (`nc -zv <ip> 80 8123`) rather than
   assuming one.
-- No working QEMU guest agent — don't expect `qm agent <vmid> ping` or IP-readback tooling to
-  work; find the DHCP-assigned IP via the host's ARP table (`ip neigh` on the Proxmox node,
-  matched by the guest's MAC) instead.
+- **HAOS ships qemu-guest-agent, but the VM needs `agent: 1`** (Terraform `agent { enabled = true }`).
+  Corrected 2026-10-30: the "no working agent" note here was only ever true because the VM was built
+  without that flag. Without it, **HAOS ignores ACPI shutdown**: every `qm shutdown` and every pve
+  shutdown waited the full 180 s and then SIGTERMed HA, a hard kill that risks its database. With
+  it, `qm shutdown 150` took 25 s and `qm agent 150 ping` answers (HAOS 18.4). The flag takes effect
+  only after a full VM stop and start, not a guest reboot. Stop it cleanly from HA itself
+  (Settings → System → power icon → Advanced → Shut down system), then apply. Without the agent,
+  find the IP via `ip neigh` on the Proxmox node, matched by MAC.
 
 ## Editing configuration.yaml
 
@@ -113,9 +118,9 @@ Two separate apps are needed, not one:
 
 ## Backup/restore via Proxmox Backup Server
 
-VM-level PBS backup/restore works the same as any other Proxmox VM (`vzdump`/`qmrestore`) despite
-the missing guest agent — snapshot-mode backup doesn't require agent-based filesystem freeze to
-succeed (confirmed: backup completed cleanly despite `qm agent ping` failing). One restore-test
+VM-level PBS backup/restore works the same as any other Proxmox VM (`vzdump`/`qmrestore`) with or
+without the guest agent. Snapshot-mode backup completed cleanly before the agent was enabled
+(2026-10-30); with it on, vzdump also gets an fs-freeze. One restore-test
 gotcha: **a `qmrestore` to a throwaway VMID preserves the original guest's MAC address** — booting
 it alongside the still-running original puts two VMs on the same LAN segment with an identical
 MAC. Strip it first: `qm set <throwaway-vmid> --net0 virtio,bridge=vmbr0` (omit the MAC) so

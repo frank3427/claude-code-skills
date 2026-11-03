@@ -136,3 +136,16 @@ test files generated the same way from the same source image — Immich dedups b
 "different" test files with identical bytes will silently resolve to the same underlying asset,
 which can leak a test asset into the wrong album as a side effect (harmless, but confusing until
 traced back to the matching checksum).
+
+## Successor (2026-10-07): SD card → R2 directly, and the macOS privacy trap it hit
+
+Immich was decommissioned; the camera backup now goes straight to R2 (`mac-tools/sdcard-r2-sync/` in the homelab
+planning repo: per-file single-part upload, R2 MD5 verified before the manifest row, no deletes, Keychain credentials).
+
+**A launchd job can't read a removable volume.** A LaunchAgent running `/bin/bash` on `StartOnMount` can list
+`/Volumes`, but `find /Volumes/<card>/DCIM` fails with `Operation not permitted` (Removable Volumes privacy). A
+background process gets no "Allow?" prompt, so it is refused silently. Fix without granting Full Disk Access to bash:
+wrap the script in a tiny app (`osacompile -o "~/Applications/SD Card Backup.app" -e 'do shell script "…"'`, ad-hoc
+`codesign`, `LSUIElement`), have the LaunchAgent `open -g -j` the app, and open it once interactively so macOS asks
+the app for removable-volume access. **Also:** a run that examined zero files must never report success. The first
+version said "0 backed up, 0 already safe. Safe to wipe" on a card it couldn't read.

@@ -12,6 +12,13 @@ Terraform+Ansible-managed fleet; the mechanics below generalize to any single-iG
 Decommissioned 2026-07-18 at Will's request (a deliberate choice, not a resource-pressure one)
 — this skill exists so a future redeploy doesn't have to rediscover any of the following.
 
+**2026-10-23 redeploy (no GPU):** Jellyfin is live again on CT 143 `media` as part of an offline media server
+(homelab-ansible `media-install.yml`): native Jellyfin 12.3, library on a quota'd host dataset bind mount
+(`pct set 143 -mp0 /rpool/media,mp=/srv/media`, never in vzdump), first-run wizard + libraries + scan schedule
+done via the HTTP API (`/Startup/*`, `/Library/VirtualFolders`, `/ScheduledTasks/{id}/Triggers`) so no browser
+step is needed. Clients direct-play, so the iGPU was left alone. **The iGPU is still bound to `vfio-pci`** even
+though the Immich VM it served was destroyed 2026-10-07: releasing it needs the modprobe change + a pve reboot.
+
 **⚠️ The iGPU is currently claimed by something else.** The same day Jellyfin was decommissioned,
 its freed iGPU was passed through **exclusively** to the Immich VM via `vfio-pci` (full PCI
 passthrough — this hardware has no GVT-g/mdev support, so it can't be split). A future Jellyfin

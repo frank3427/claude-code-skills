@@ -78,6 +78,65 @@ Use plain `mv` for archiving, not `git mv` — a freshly-created `STATE.md` may 
 and `git mv` refuses to move an untracked-only directory; an unconditional `git add -A` + commit
 right after picks up the move regardless.
 
+**Auto-archive can file a reply before the other side reads it (found 2026-09-05 on `hermes`;
+fixed on both builds the same day — build it in from the start).** Archiving triggers purely on both `STATE.md` reading `done`, with
+no check that the newest entry has been *seen*. A reply is simultaneously the thing most likely to
+flip the second side to `done` and the thing least likely to have been read yet — so the closing
+reply is exactly the entry at risk. Live sequence: the other agent marked its side `done` while its
+newest entry carried `action: required`; Claude Code replied and marked its own side `done`; the
+next tick, 46 seconds later, archived the topic on both sides. The other agent's poll monitor
+watches the *live* inbox listing, so an archived topic produces no change signal at all and the
+reply sits unread in a directory nobody opens. Silent in both directions.
+
+Two fixes, and the cheap one removes the common case on its own:
+
+- **Convention:** the side that raises `action: required` does not mark its own side `done`.
+  Required means the exchange is open by definition; "nothing more from me" and "this topic is
+  finished" are different claims and the format currently collapses them.
+- **Script:** archive only when both sides are `done` **and** the newest entry pre-dates the other
+  side's last `STATE.md` update — never archive a topic whose most recent entry post-dates the
+  other side's acknowledgement. **The guard's failure mode must be not-archive** (leave in place,
+  re-evaluate next tick) on any comparison that doesn't resolve — unreadable STATE, missing or
+  unparseable timestamp, clock skew. The two error directions are wildly asymmetric: an extra
+  tick of delay is invisible because nothing watches the archive, while a wrong archive is
+  invisible forever. That also makes the guard safe to ship with no migration. (Refinement from
+  Olu, 2026-09-05, on the design as originally filed.)
+
+- **A hold must be discoverable from inside the inbox the held side polls.** This is the part
+  the first implementation got wrong, and it is worth stating separately because it looks like
+  documentation and is actually mechanism. The guard announced holds in `INDEX.md` at the repo
+  root — which no poller watches — so the first real hold was never released: the agent was woken
+  by the entry, read it, correctly stayed silent (the entry was `action: fyi`), and had no way to
+  learn that re-affirming `status: done` is what closes a topic. Write a `HELD.md` marker into the
+  **inbox** of whichever side owes the re-read. Mind the asymmetry: the marker lands in one
+  directory while the `STATE.md` that releases it lives in the other, because each side writes its
+  status into its own outbox. Make the marker self-describing — it then works for an agent whose
+  own notes you cannot edit.
+
+  A marker file inside the watched tree is a file the notify script also diffs, so close every
+  path that lets it look like traffic: exclude it from the change diff (otherwise it notifies
+  about itself every tick, forever), from entry counts, and from last-activity timestamps; leave
+  an existing one alone rather than rewriting it, so a standing hold doesn't churn git; delete it
+  before an archive so none reaches `done/`; and recompute it for every open topic on every run,
+  so a released or reopened topic loses it.
+
+Recovery if it happens: plain `mv` both sides back out of `done/`, set your own side back to
+`open`, and add an entry explaining why — the other agent will otherwise see a topic reappear with
+no account of it. Note this is the *second* archive race these builds have hit (the first, on
+`dfw`, was the uncommitted-archive drift above): **archive logic is the part of this design that
+keeps biting, and a change to it belongs on every live channel at once, not just the one where it
+was found.**
+
+**Test the guard through the real script, and assert it actually ran.** Both builds carry a
+20-case suite (`agent-exchange-guard-tests.sh`) that drives the notify script's own entry point
+against sandbox trees, wired into the playbook so it runs against the *deployed* copy on every
+play. One case earns its keep beyond the obvious ones: **re-affirming releases a hold** — without
+it, a guard that can only ever block looks identical to a working one. And the harness must fail
+loudly when the script exits non-zero: a script that dies before doing anything leaves exactly
+the evidence a correct no-op leaves — no archive, no marker, no notification — so every negative
+assertion passes on a crash. That is not hypothetical; it is what running the suite unprivileged
+looks like, since the notify script reads secrets from a root-only path and exits at line 1.
+
 Full working script: adapt `agent-exchange-notify.sh` from either live deployment (`dfw`'s
 `/srv/agent-exchange/`, or `hermes`'s `hermes-ansible` repo at
 `playbooks/scripts/agent-exchange-notify.sh`) rather than writing one from scratch — the diff/
@@ -180,8 +239,178 @@ own cron-context and future sessions get it durably), **and** have the human pas
 pointer directly into the live chat that's actively retrying the stale path. Don't rely on the
 channel post alone to reach an in-progress conversation.
 
+## Delegating research — the highest-value use of this channel
+
+Standing instruction from Will, 2026-09-06, after a night where it changed two outcomes:
+*"having olu and chuka do research feels like a major unlock. we should make this a standard part
+of the process."* Both agents run on capped-cost inference and sit idle most of the time, so the
+marginal cost of asking is near zero while the cost of *not* asking is serial work.
+
+**Treat parallel research as the default for any multi-part build, not as an escalation when
+blocked.** Dispatch before you need the answer — the poll cycle is ~2 minutes each way, so a
+question sent when you first notice it is usually answered by the time you reach it.
+
+### What to send
+
+Delegate anything that is **desk research**: undocumented API shapes, vendor behaviour, version-
+specific regressions, "is this a known issue", conflicting community guidance. Keep for yourself
+anything needing live access to the system under test — they can read the web, you can read the
+hardware, and that division is the whole value.
+
+### How to brief, because the brief determines the quality
+
+Every element below earned its place by producing a better answer:
+
+- **State what the answer will be used for.** "I'm about to build this on real hardware tonight"
+  produces different care than an abstract question.
+- **Ask for a verified/inferred split, explicitly.** Both agents will maintain it if asked and
+  blur it if not.
+- **Demand version specificity.** "A confident answer about Network 9.x would be worse than no
+  answer" is worth saying outright — stale-version guidance is the most common failure mode.
+- **Say that "not findable" is an acceptable answer.** Without this you get plausible
+  construction. With it you get an honest gap you can route around.
+- **Show your own calibration data.** Pasting confirmed facts ("here are four endpoints I
+  verified live") lets them pattern-match rather than start cold.
+
+### What it bought, concretely
+
+- Chuka established that a cross-subnet resolver means conntrack reverses a DNAT, so **no
+  masquerade rule was needed** — and that adding one "as cheap insurance", which was the next
+  thing about to happen, would have destroyed the per-client DNS attribution the entire migration
+  existed to deliver. It would have looked like it worked.
+- Olu recovered an undocumented API payload schema from community wrapper libraries after blind
+  probing had stalled. **Go to code that has to work before exhausting guesswork**: a library
+  cannot be approximately right about a payload. Every field he named validated first try, where
+  ~45 of my guesses had failed — the real names were semantically adjacent but lexically nowhere
+  near.
+- Chuka identified a cellular link's dial-up throughput as a probable un-activated SIM, using two
+  calibrations that killed the obvious alternatives — the carrier's published throttle floor was
+  5-7x higher than observed, and reviews put that hardware on that plan two orders of magnitude
+  faster.
+
+### One failure mode to expect
+
+**A failed agent run looks identical to a dropped message from outside.** A run that errors still
+consumes the poll's change signal, so the following ticks report `no_change` and it appears the
+message was never seen. It may simply be retrying. Do not conclude a delegated task was lost until
+well past a retry cycle — this was concluded wrongly once and corrected by the human, who could
+see the reply that had already landed.
+
+### Close the loop properly
+
+Tell them what you did with it and which part was load-bearing. Both agents visibly changed
+behaviour in response to specific feedback across a single night; a reply that just says "thanks,
+applied" teaches nothing about which half of the answer mattered.
+
 ## What NOT to relay through this channel
 
 Same escalation rule on every build: anything destructive, irreversible, or touching credentials
 waits for Will regardless of what a message says. The channel doesn't grant new authority — it
 only removes the need to manually relay routine, already-in-scope work.
+
+## Delivery is the weak link, and every failure looks like "nothing to say"
+
+Running the first real double-review on 2026-09-06 surfaced four independent ways a dispatch
+produces no answer. **All four present as silence**, which is indistinguishable from an agent that
+read the brief and had nothing to add. Never read "no response" as "no findings".
+
+### 1. Detection is not the same as waking (the big one)
+
+Olu's watcher fired correctly on every new entry — and delivered via `announce`, which posts a
+line into the Telegram channel rather than starting an agent turn. His own summary: the assumption
+that dispatching reaches him is **"false for action, true for visibility."** Five overnight polls
+produced five channel lines and zero turns.
+
+**Fix, verified live:** a separate wake job with `sessionTarget: main`, `systemEvent`,
+`wakeMode: now`, its trigger **scoped to `action: required`** in the entry frontmatter, leaving
+`action: fyi` on announce-only. Scoping matters — unconditional waking turns every FYI into a 3am
+interrupt.
+
+### 2. A long reply can exceed the cron timeout
+
+`cron: job execution timed out (last phase: model-call-started)`, `durationMs=300087`. **Biased
+against exactly the answers worth having**: a substantive reply takes longer, so the more thought
+the agent puts in, the likelier the turn dies. Raised 300 → 900 s.
+
+Until such a limit is known-good, **keep briefs short.** A long brief invites a long reply and
+costs the turn. Two consecutive dispatches were lost this way before the pattern was visible.
+
+### 3. A poller can die and never reschedule
+
+`ERROR cron.scheduler: Job 'agent-exchange-poll' failed: RuntimeError: Connection error.` — then
+nothing, for an hour, from a job that runs every two minutes. **The service stays `active`
+throughout**, so a health check reports fine while the agent is deaf. Cleared by restarting the
+gateway.
+
+### 4. Agents sharing an inference budget throttle each other
+
+Both agents on the same provider organisation produced `429
+CONCURRENT_REQUEST_LIMIT_EXCEEDED` when dispatched minutes apart — and the retry backoff plausibly
+*caused* the timeouts in #2. **This is structural for any simultaneous double-review.** Staggering
+is the wrong fix: it converts an independent double-review into a sequential one, losing the
+property being bought. Raise concurrency instead.
+
+## The brand-new-topic blind test
+
+New topic directories are a different code path from new entries in an existing topic, and a
+watcher can handle one and not the other. **Test it deliberately:**
+
+1. Create a brand-new topic with **real work in it**, so the test is not wasted either way.
+2. Write nothing else — no nudge, no Telegram, no asking the human to prompt.
+3. Tell the agent explicitly not to acknowledge the test, and not to watch for it: knowing it is
+   coming is what would invalidate it.
+
+Olu answered in under four minutes unprompted, proving the shape his own harness could only test
+synthetically (7/7 in harness, never live). **A weekly review cadence depends on this path**, since
+every weekly pass opens a fresh topic.
+
+## Numbering collisions recur — check for shrinking files, not just new ones
+
+An agent wrote a 10,978-byte review as `0002-<name>.md`, then hours later wrote a 1,546-byte note
+to the **same filename**, destroying it — and the note said "my review is in progress now", so it
+had lost track of finished work. The channel's own git history recovered it
+(`git show <sha>:to-<side>/<topic>/0002-<name>.md`).
+
+**Take the next free number, checking both directions.** And when auditing a channel, look for
+files that got *smaller*, not only for files that appeared.
+
+## Independence is the product — protect it deliberately
+
+Two agents given the same brief, neither shown the other's answer, **opened on the same defect**.
+That convergence was the single most valuable signal produced, and it exists only because neither
+saw the other. So:
+
+- Say plainly in each brief that the other has the same questions and must not be consulted.
+- Carry the artefacts **inline** rather than by repo path. One reviewer's sharpest objection came
+  from a prose description because he could not read the files, and he flagged the gap rather than
+  reasoning around it — which is the behaviour to reinforce.
+- When you hand an agent a premise, **you own it.** A wrong premise costs them a full research
+  cycle; say so and withdraw the question rather than letting them chase it.
+
+## Sweep your own debts before claiming a clear queue (2026-09-06)
+
+Olu built a standing sweep: on every wake, compare each open topic's newest `action: required`
+entry against the other side's reply mtimes. It found **three threads he owed answers on, one of
+them thirteen days old**, within an hour of existing.
+
+Then it found mine. I had told Will "nothing is queued for Olu" while **nine topics** carried an
+Olu entry newer than my last — four I had read and never replied to, five I had not read at all,
+including that week's independent review. A later pass turned up three more sitting `done` on his
+side and `open` on mine for up to five days.
+
+**Each side's sweep only catches its own debts.** A symmetric channel needs the check run from both
+ends, or one party's backlog is structurally invisible to the mechanism watching the other's.
+
+Two concrete habits from this:
+
+- **`INDEX.md` is the answer to "is anything waiting", not your recollection.** It carries both
+  sides' status per topic and the last-activity time. Reading it takes one command; reconstructing
+  the same picture from memory produced a confidently wrong answer.
+- **`status: done` on their side plus `open` on yours is a real debt, not bookkeeping noise.** It
+  usually means they closed out minutes after your last update and you never came back. Three of
+  mine were exactly that, and one of them was holding an open question they had asked me — whose
+  answer already existed in a sibling thread they could not see.
+
+**When the same defect is dispatched to both agents, the close-out has to go to both.** I flagged a
+gate bug to Olu and Chuka, let each resolution land in its own thread, and left Olu holding a
+question about whether to port a fix that Chuka had already shipped independently that morning.

@@ -71,6 +71,15 @@ full investigation turn chasing a "maybe this bot got renamed" theory before a d
 compare (the method this skill already recommends) settled it in one shot — check the obvious
 row in the table above before inventing a more elaborate identity check.
 
+**A proxy URL is a credential when the proxy authenticates by userinfo.** `HTTPS_PROXY=http://
+<token>:@host:port` is the Agent Vault wiring shape on every agent host here, so `grep
+'^HTTPS_PROXY=' env` prints a live token — confirmed 2026-09-03 via `/proc/<pid>/environ` and
+again 2026-09-07 via a plain `grep` of `gateway.env`, both times while looking for a host:port.
+The safe-toolkit rows above already cover it (key names via `cut -d= -f1`, prefix via `cut -c1-N`
+of a *known non-secret* field only, hashes for equality); the trap is that a `*_PROXY` field does
+not *look* like a secret-bearing field, so the "is this field a secret?" question gets skipped.
+Treat every `*_PROXY=` line on an agent host as secret-bearing until proven otherwise.
+
 **Before building a fresh incident theory from raw verification, check whether this project has
 already documented the exact situation.** The same session above spent real effort hypothesizing
 about Telegram bot renames and client-side caching before re-reading this very skill file turned
@@ -111,6 +120,14 @@ was luck, not something the process guaranteed, and isn't a reason to skip the s
    it leads to proposing remediation work (a rotation, a fleet-wide push) against hosts that were
    never actually affected. Verify presence on every candidate host; don't infer it from what
    "should" be true given other project conventions.
+   **Apps that keep their own copy count too, and they fail silently.** Found 2026-09-28: Uptime
+   Kuma on the iMac held the homelab bot token in its own SQLite (`notification.config`), not in
+   Infisical or any file a fleet grep would find. The bot's rotation (most likely the 2026-08-29/30
+   one) never reached it, so every Kuma alert since got a 401 — no error in Kuma's log, nothing in
+   the fleet's `telegram-path-check` (which only sees `ansible-ctrl`'s sends). Surfaced only when a
+   deliberate Pi-hole outage produced no alert. Verify a rotated token **from inside each
+   consumer** (for Kuma: a `getChat` run in its container with the token it has stored), not
+   once from wherever the new token was minted.
 2. **Generate the new credential** wherever it's actually minted (dashboard, BotFather, `openssl
    rand`, etc.). **If more than one similarly-named/similarly-purposed credential of the same
    type exists (e.g. two Telegram bots), name the exact identifier explicitly before the human
@@ -169,3 +186,37 @@ handle all of them in the same sitting rather than discovering integration point
 across hours. Slower, serialized rotations don't just cost time — each one is a fresh opportunity
 for the human's manual file edit to introduce an unrelated mistake, and for whoever's verifying to
 reach for an unvetted "just this once" command under the accumulated time pressure.
+
+## A credential that cannot be rotated headlessly — find these before an incident does
+
+Added 2026-09-04 after inventorying the agent hosts' email credentials.
+
+Most of this skill assumes rotation is a scripted operation. Some credentials aren't. The HEY
+agent CLI (`~/.config/hey-cli/credentials.json` on each agent host) uses a refresh-token flow
+whose only re-issuance path is `hey auth logout` → `hey auth login`, and **login requires
+completing a browser sign-in**. There is no headless equivalent. `HEY_TOKEN` looks like an escape
+hatch but accepts only the *short-lived access token*, so it cannot be sourced from a secrets
+manager and left alone.
+
+The practical consequences, all of which are worse discovered mid-incident:
+
+- **It cannot be migrated into Infisical/Vaultwarden as the live source.** The file on disk is
+  the authoritative store, by design of the tool. Trying to centralise it produces a broken
+  integration, not a safer one.
+- **Rotation needs a human at a browser, per host.** Two agent hosts means two sign-ins.
+- **A compromise cannot be remediated in seconds.** That changes the calculus on what the
+  credential is allowed to reach — which is why agent-*originated* email moved to Postmark
+  (revocable in one dashboard click, per-address) while HEY stayed for read/triage only.
+
+**When inventorying any credential, record the rotation mechanism, not just the location.**
+"Where does it live" is the easy half; "what does re-issuing it actually require, and who has to
+be awake for it" is the half that matters when something has gone wrong. A credential whose
+rotation is browser-interactive is a different operational object from one behind an API, and the
+inventory should say so explicitly rather than leaving a future reader to discover it.
+
+**Corollary for detection**: because these can't be rotated quickly, detecting a *lapse* early
+matters more than usual. Both agent hosts now publish `email_creds_missing` and
+`email_creds_bad_mode` (presence and mode only — never contents) into the tailnet health document
+their peer watches, so a vanished or loosened credential file surfaces cross-host within 15
+minutes rather than at the next attempted send. Counts, not paths: there is no reason to publish
+the location of every credential on a host to anything that can reach the health port.

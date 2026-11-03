@@ -1,9 +1,15 @@
 ---
 name: vaultwarden-deployment
-description: This skill should be used when deploying Vaultwarden (self-hosted Bitwarden-compatible server) via Docker on a bare Debian/Ubuntu VPS or VM — not a Proxmox LXC/VM fleet host. Covers loopback-only binding, Tailscale Serve exposure, the admin-token hashing tool's TTY requirement, and locking down signups after the first account exists. Trigger phrases include "deploy vaultwarden", "vaultwarden docker", "vaultwarden admin token", "vaultwarden hash preset", "No such device or address vaultwarden", "SIGNUPS_ALLOWED", "vaultwarden signups disabled verify".
+description: This skill should be used when deploying Vaultwarden (self-hosted Bitwarden-compatible server) via Docker on a bare Debian/Ubuntu VPS or VM — not a Proxmox LXC/VM fleet host. Covers loopback-only binding, Tailscale Serve exposure, the admin-token hashing tool's TTY requirement, and locking down signups after the first account exists. Trigger phrases include "deploy vaultwarden", "vaultwarden docker", "vaultwarden admin token", "vaultwarden hash preset", "No such device or address vaultwarden", "SIGNUPS_ALLOWED", "vaultwarden signups disabled verify", "update vaultwarden", "vaultwarden-install.yml", "VAULTWARDEN_ADMIN_TOKEN".
 ---
 
 # Vaultwarden deployment (Docker, single-user personal instance)
+
+> **The instance this was built from is retired (2026-11-01).** It held one secure note, Infisical had
+> already taken over the secrets role, and dfw itself was being retired. Data archived to R2
+> `immich-archive/vaultwarden/`; removed by dfw-ansible `vaultwarden-retire.yml`. The mechanics
+> below stay valid for a future deployment. Before standing one up again, ask whether Infisical
+> (fleet secrets) or Will's own password manager already covers the need.
 
 Built and verified 2026-08-15 on a Vultr VPS (`dfw`) as the secrets store for a broader
 multi-service box. Docker is fine here specifically because this is a personal/single-purpose
@@ -134,3 +140,26 @@ vaultwarden/server` will show it dangling/`<none>`): `docker image rm <old-image
   fails — confirms the only path in is through Serve, not a second exposed route
 - Public IP has no route to the port at all
 - `SIGNUPS_ALLOWED=false` confirmed via container env after the owner's account exists
+
+## Ansible-managed on dfw since 2026-10-04 — this supersedes the hand recreate above
+
+`dfw-ansible/playbooks/vaultwarden-install.yml` owns the container. It was seeded from `docker
+inspect` of the live hand-run container: three env vars, `127.0.0.1:8080->80`, a bind mount of
+`/opt/vaultwarden/data`, `unless-stopped`, the default bridge network.
+
+- **Pinned, not `:latest`:** `vaultwarden_version: "1.37.3"`. To update, bump it and run
+  `cd /root/ansible && ansible-playbook playbooks/vaultwarden-install.yml` on dfw as root. It
+  only acts when the image ID differs. Then it stops the container, archives `/opt/vaultwarden/data`
+  to `/root/config-backups/vaultwarden-data-<ts>.tar.gz` (0600, taken stopped, so the SQLite copy
+  is consistent), recreates the container, and waits for `healthy` plus `/alive`.
+- **ADMIN_TOKEN** is in Infisical (`homelab-fleet`/`dev`, `VAULTWARDEN_ADMIN_TOKEN`), read at apply
+  time with `/usr/local/bin/infisical-get.sh`. It was moved there by piping it from `docker inspect`
+  to ansible-ctrl's `infisical-set.sh` (dfw has no write helper), never printed, and verified by
+  sha256 against the live value. The old `--env-file /root/.config/vaultwarden-admin.env` in the
+  recipe above is gone: it was shredded 2026-10-04 after a hash match against Infisical showed
+  nothing referenced it. Infisical is now the only copy.
+- **Checks after an update:** `docker exec vaultwarden /vaultwarden --version`, then
+  `https://dfw.tail922cee.ts.net:8443/alive` -> 200. `/api/config`'s `version` field is the
+  *Bitwarden API* compatibility version (`2026.6.0`), not Vaultwarden's.
+- **Downtime** for the 1.37.2 -> 1.37.3 recreate was about 7 s. `dfw-package-check` still flags
+  newer releases, and its suggested fix points at this playbook.

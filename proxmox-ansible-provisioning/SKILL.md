@@ -275,6 +275,11 @@ the **host's** load at the same timestamps (Prometheus `node_load15{instance="<h
 if they match, the fix is on the host side (find and fix what's actually spiking there), not the
 container.
 
+**Privileged LXCs too (2026-10-06).** Pi-hole (CT 100, privileged) showed `load average: 2.05, 4.39, 3.46`
+and pve showed the same three numbers at the same moment. The cause was fleet-wide Ansible runs, and pve has
+4 cores. Judge a service by its own latency (Pi-hole's cached answers stayed at 0.02–0.05 ms), not by `uptime`
+inside the guest.
+
 ## Verification discipline for anything SSH/auth-related
 
 Before letting a playbook change `PasswordAuthentication`/`PermitRootLogin` or similar, verify
@@ -291,3 +296,12 @@ ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o BatchMode
 
 A clean `ansible-playbook` recap is not proof the security property actually holds — read the
 `--diff` output and test both the allowed and blocked path directly.
+
+## Gotcha 10 — never stage a managed file in `/tmp`
+
+`base-hardening.yml` copied its terminfo source to `/tmp` and compiled it with `creates:`. After any
+reboot or tmp cleanup the copy reappeared as `changed` on all 13 hosts, so the weekly `ansible_check`
+read drift that wasn't there. `creates:` also meant an updated source was never recompiled. Fixed
+2026-10-06: a persistent source (`/usr/local/share/homelab-terminfo/`), registered, and the compile step
+`when: src.changed or not compiled.stat.exists`. A playbook that is not idempotent across a reboot
+trains everyone to ignore the drift check.

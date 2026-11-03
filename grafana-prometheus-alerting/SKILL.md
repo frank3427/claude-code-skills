@@ -1,6 +1,6 @@
 ---
 name: grafana-prometheus-alerting
-description: This skill should be used when a Prometheus + Grafana stack has metrics being scraped but no real alerting configured, when adding a new Grafana alert rule via provisioning-as-code (not the UI), when checking whether Prometheus alert rules actually exist versus assuming a monitoring stack alerts on its own, when detecting individual systemd service failures across a fleet without building a custom OnFailure-to-webhook mechanism, or when a Grafana alert rule needs testing end-to-end before trusting it. Trigger phrases include "prometheus has no alert rules", "grafana provisioning alert rules", "node_systemd_unit_state", "grafana rules.yaml", "alert on systemd unit failure", "grafana noDataState", "test grafana alert rule firing", "prometheus /api/v1/rules empty", "node_exporter systemd collector".
+description: This skill should be used when a Prometheus + Grafana stack has metrics being scraped but no real alerting configured, when adding a new Grafana alert rule via provisioning-as-code (not the UI), when checking whether Prometheus alert rules actually exist versus assuming a monitoring stack alerts on its own, when detecting individual systemd service failures across a fleet without building a custom OnFailure-to-webhook mechanism, or when a Grafana alert rule needs testing end-to-end before trusting it. Also use it when a disk/filesystem alert rule is green over something that is actually filling up, when a mounted volume has no `node_filesystem_*` series at all, or when a scrape target goes DOWN after a host changes address. Trigger phrases include "prometheus has no alert rules", "grafana provisioning alert rules", "node_systemd_unit_state", "grafana rules.yaml", "alert on systemd unit failure", "grafana noDataState", "test grafana alert rule firing", "prometheus /api/v1/rules empty", "node_exporter systemd collector", "node_exporter not showing /mnt", "no metrics for mounted volume", "mount-points-exclude", "collector.filesystem.mount-points-exclude", "datastore has no disk metrics", "alert green but disk full", "filesystem collector skipping mount", "disk space rule never fires", "scrape target DOWN after IP change", "pin scrape target to hostname not IP".
 ---
 
 # Grafana native alerting via provisioning-as-code
@@ -109,6 +109,109 @@ for t in json.load(sys.stdin)['data']['activeTargets']:
 "
 ```
 
+**Address a scrape target by a stable name, not a LAN IP, if the host's address can move.** A
+target pinned to an IP has no fallback: when the host moves subnet the target simply goes DOWN,
+and if the same stale IP is also in inventory and a reverse-proxy config, one address change
+breaks config management and a published vhost at the same time. Seen 2026-09-06: a host moved to
+a bench subnet and its scrape target, Ansible `ansible_host`, and a Caddy vhost were all pinned
+to the old IP — `Host Down` fired correctly for 6 days while the vhost 502'd. A tailnet/MagicDNS
+name spanned every state, including a second address change two weeks later. Note this failure
+mode is *loud* — the alert worked — which makes it a different class of problem from the silent
+gap above, and worth distinguishing when reporting.
+
+A stale DNS record can also mask this during diagnosis: with both a dead LAN A record and a live
+tailnet one, `ssh <host>` succeeds by silently failing over to the second address while
+`getent hosts <host>` shows only the first. Test the specific address you care about, not the
+name.
+
+## A green rule can mean the series doesn't exist, not that the thing is healthy
+
+Three independent faults stack into the same symptom: a rule sitting `Normal` over a volume that
+is genuinely filling. Each one hides the others, so check all three — finding one is not finding
+the cause. Hit for real 2026-09-12: a PBS chunk store at 80% had **no disk monitoring whatsoever**,
+on a fleet whose Grafana looked fully provisioned.
+
+**1. The exporter may be dropping the filesystem entirely.** Debian's
+`prometheus-node-exporter` package patches upstream's mount-point exclude regex to also cover
+`/mnt` and `/media` — upstream excludes neither. Any data volume under `/mnt` therefore exports
+**zero** `node_filesystem_*` series, on every Debian host, with no error anywhere. `ARGS=""` in
+`/etc/default/prometheus-node-exporter` reads as "nothing customised", not "two paths silently
+dropped" — which is why this survives a config review. Confirmed on Debian 13 / node_exporter
+1.9.0.
+
+Don't reason from upstream's documented default. Read what the exporter actually parsed, which
+it logs at startup:
+
+```bash
+journalctl -u prometheus-node-exporter | grep -o 'mount-points-exclude.*' | tail -1
+# Debian:   ^/(dev|proc|run|sys|mnt|media|var/lib/docker/.+|...)($|/)
+# upstream: ^/(dev|proc|run/credentials/.+|sys|var/lib/docker/.+|...)($|/)
+```
+
+Before blaming the exclusion, rule out a mount-namespace issue — a hardened unit
+(`PrivateMounts=yes`, `ProtectSystem=strict`) can freeze the exporter's view of mounts at start
+time, which presents identically. Compare the process's own mount table against PID 1's:
+
+```bash
+pid=$(systemctl show -p MainPID --value prometheus-node-exporter)
+grep <mountpoint> /proc/$pid/mounts   # visible here but absent from /metrics => it's the regex
+grep <mountpoint> /proc/1/mounts
+```
+
+Restore upstream's behaviour for `/mnt` and `/media` **only**. Keep Debian's broader `run`
+exclusion — upstream narrows it to `run/credentials/.+`, and widening it adds a pile of `/run`
+tmpfs series nobody wants:
+
+```bash
+ARGS="--collector.filesystem.mount-points-exclude=^/(dev|proc|run|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($|/)"
+```
+
+The `$` and `|` survive systemd's `EnvironmentFile` parsing unescaped, but confirm via the
+parsed-flag log line above rather than trusting that either way. Apply it fleet-wide rather than
+only to the host that exposed it, so the next host that gains a data volume is covered by
+default instead of repeating the discovery.
+
+**2. The rule may be scoped so it could never match.** A disk rule pinned to `mountpoint="/"`
+cannot fire for a data volume even once the series exists — and that pin is a very common
+starting point, since it is the obviously-correct scope when every host is just a root disk.
+Prefer excluding pseudo-filesystems to enumerating mountpoints:
+
+```promql
+(node_filesystem_avail_bytes{fstype!~"tmpfs|vfat|fuse.*|squashfs|overlay|iso9660"}
+ / node_filesystem_size_bytes{fstype!~"tmpfs|vfat|fuse.*|squashfs|overlay|iso9660"}) * 100
+```
+
+On a Proxmox host also exclude the ZFS dataset mountpoints (`mountpoint!~"/rpool.*"`) — each
+container subvol restates the same pool free space, so one pool filling produces a fan of
+duplicate alerts for a single condition.
+
+**3. `noDataState: OK` turns an absent series into a pass.** With faults 1 and 2 present this is
+what makes the whole thing read healthy rather than unknown. Leaving it `OK` is still usually
+right when a separate `Host Down` rule already covers a host going silent — otherwise both fire
+for one cause — but know that you are trading a silent gap for less noise, and say so where the
+rule is defined.
+
+**Always resolve the rule's own expression against live Prometheus before trusting it**, and read
+the returned series rather than the count. This is also the pre-flight that keeps a widened rule
+from storming on deploy:
+
+```bash
+python3 - <<'EOF'
+import urllib.request, urllib.parse, json
+SEL='fstype!~"tmpfs|vfat|fuse.*|squashfs|overlay|iso9660",mountpoint!~"/rpool.*"'
+expr='(node_filesystem_avail_bytes{%s} / node_filesystem_size_bytes{%s}) * 100' % (SEL,SEL)
+u="http://localhost:9090/api/v1/query?"+urllib.parse.urlencode({"query":expr})
+for s in sorted(json.load(urllib.request.urlopen(u))["data"]["result"],
+                key=lambda s: float(s["value"][1])):
+    m=s["metric"]
+    print("%-12s %-24s %5.1f%% free%s" % (m.get("instance"), m.get("mountpoint"),
+          float(s["value"][1]), "  <<< WOULD FIRE" if float(s["value"][1])<10 else ""))
+EOF
+```
+
+If the volume you are worried about is not in that output, the rule cannot protect it no matter
+what the threshold says.
+
 ## Verify a new rule actually fires, don't just trust the YAML
 
 Deploy, then prove it live with a throwaway, harmless failure — don't assume the query
@@ -143,3 +246,43 @@ for g in json.load(sys.stdin)['data']['groups']:
 Clean up the throwaway unit afterward (`systemctl reset-failed <unit>` before removing the
 unit file — otherwise the failed state can linger in systemd's own bookkeeping even after the
 unit file is gone).
+
+## Proving the contact point delivers — Grafana 13.x test API (2026-09-12)
+
+To prove the *notification pipe* separately from rule evaluation, fire the contact point's test.
+Grafana 13.2 removed the old endpoint: `POST /api/alertmanager/grafana/config/api/v1/receivers/test`
+→ **HTTP 410**. The replacement is k8s-style:
+
+```bash
+B=http://<grafana>:3000/apis/notifications.alerting.grafana.app/v1beta1/namespaces/default/receivers
+NAME=$(curl -s -u "admin:$PW" "$B" | python3 -c 'import json,sys
+for i in json.load(sys.stdin)["items"]:
+    if i["spec"]["title"]=="<contact-point-title>": print(i["metadata"]["name"])')
+curl -s -u "admin:$PW" -H 'Content-Type: application/json' -X POST "$B/$NAME/test" -d '{
+  "integration": {"uid":"<integration-uid>","type":"telegram","version":"v1",
+    "settings": {"chatid":"<chat id>","parse_mode":""},
+    "secureFields": {"bottoken": true}},
+  "alert": {"labels":{"alertname":"delivery test","instance":"grafana"},
+            "annotations":{"summary":"Test, no action needed."}}}'
+```
+
+- **`metadata.name`** is a base64-ish encoding of the title, not the title and not the integration uid.
+- **`secureFields.bottoken: true`** reuses the stored token, so it never travels. Non-secret required
+  settings **must** be sent: leaving out `chatid` → 400 "could not find Chat Id in settings". Read it
+  from the provisioning file into a variable; don't print it.
+- **Auth:** a Viewer-role API token can't run the test; use admin credentials.
+- **`{"status":"success"}` means Grafana sent it, not that it arrived.** Confirm with the recipient.
+
+**Log trap:** `logger=ngalert.sender.router … "Sending alerts to local notifier"` means Grafana's
+**built-in Alertmanager**, which then routes per `policies.yaml`. It does *not* mean local-only
+delivery. Read the notification policy's root receiver before concluding an alert never reaches the
+contact point.
+
+## The Grafana package resets `/etc/grafana` permissions on every upgrade
+
+`/var/lib/dpkg/info/grafana.postinst` runs `chown -Rh root:grafana /etc/grafana` and
+`find /etc/grafana -type f -exec chmod 640 {} ';'`. A playbook that writes provisioning files `0644`
+flip-flops with it: after each upgrade the weekly `ansible_check` shows drift, and a real run restarts
+grafana-server only to loosen permissions. Write them `owner: root, group: grafana, mode: '0640'`
+(`grafana-alerting.yml`, fixed 2026-10-06 after the 13.2.3 upgrade on 10-01). That is also right for
+`contactpoints.yaml`, which carries the bot token.

@@ -1,6 +1,6 @@
 ---
 name: pihole-dot-upstream-failover
-description: This skill should be used when adding DNS-over-TLS (DoT) as a Pi-hole upstream resolver, when evaluating cloudflared for DoT/DoH proxying, when a "no fallback DNS" or "DNS failures should surface" constraint needs to coexist with wanting resilience against a recursive resolver (e.g. Unbound) going down, when pihole-FTL --config dns.upstreams rejects an unquoted value as invalid JSON, or when designing an alerted (not silent) failover watcher for infrastructure that must not silently mask its own failures. Trigger phrases include "cloudflared proxy-dns", "cloudflared DoT deprecated", "pihole DNS over TLS", "stubby DoT", "pihole-FTL --config dns.upstreams", "dns.upstreams invalid JSON", "Unbound fallback resolver", "no fallback DNS constraint", "alerted failover watcher", "silent fallback DNS", "pihole upstream failover".
+description: This skill should be used when adding DNS-over-TLS (DoT) as a Pi-hole upstream resolver, when evaluating cloudflared for DoT/DoH proxying, when a "no fallback DNS" or "DNS failures should surface" constraint needs to coexist with wanting resilience against a recursive resolver (e.g. Unbound) going down, when pihole-FTL --config dns.upstreams rejects an unquoted value as invalid JSON, or when designing an alerted (not silent) failover watcher for infrastructure that must not silently mask its own failures. Trigger phrases include "cloudflared proxy-dns", "cloudflared DoT deprecated", "pihole DNS over TLS", "stubby DoT", "pihole-FTL --config dns.upstreams", "dns.upstreams invalid JSON", "Unbound fallback resolver", "no fallback DNS constraint", "alerted failover watcher", "silent fallback DNS", "pihole upstream failover", "Quad9", "Unbound forward-zone DoT", "forward-tls-upstream", "switch Unbound from recursive to forwarding", "tls-cert-bundle certificate verify failed", "unbound reload vs restart", "serve-expired hides an upstream outage", "FTLCONF_dns_upstreams read-only", "docker Pi-hole upstream".
 ---
 
 # Pi-hole DoT upstream resolvers: tool choice, config gotchas, and failover design
@@ -71,6 +71,23 @@ into a script; don't assume the two forms match (this is the same quoting idiom 
 `dns.hosts` — see the `pihole-local-dns-records` skill — but that key's *values* are themselves
 `"IP HOSTNAME"` strings, so its round-trip masked the same underlying asymmetry differently).
 
+## Every `dns.upstreams` change restarts pihole-FTL
+
+Changing `dns.upstreams` doesn't hot-reload. FTL logs `Restarting FTL due to change of
+dns.upstreams`, then does a full internal restart, which means **~0.6s with no DNS at all, plus a
+flushed cache**. In FTL v6.7 the key is defined with `FLAG_RESTART_FTL` (`src/config/config.c`), a
+property of the key itself, so the CLI (`pihole-FTL --config`), the API and a direct TOML edit all
+behave the same. There's no supported no-restart path.
+
+What follows for a failover design:
+- A failover and its recovery each cost one short total outage. Measured in the homelab's forced
+  test on 2026-09-12: ~7.7s of failed uncached lookups before the switch, then ~0.6s dark at each
+  restart.
+- Never write the key unless the value actually changes (the idempotency check above).
+- Don't "fix" it by keeping two upstreams configured permanently. That's exactly the standing
+  silent fallback the constraint forbids.
+- Make the probe resistant to false positives, since every false failover is a real outage.
+
 ## Designing resilience without violating a "no silent fallback" constraint
 
 If the environment has a standing rule like "DNS failures should surface, not be silently
@@ -83,8 +100,26 @@ signal that anything is wrong.
 health-checked, alerted, actuated failover**, not a standing blend:
 
 1. Steady state: primary resolver only, single upstream, unchanged from a no-fallback baseline.
-2. A watcher (systemd timer, ~30s interval) runs a **real query** against the primary — not just
-   `systemctl is-active`, which misses a wedged-but-running resolver (e.g. broken root hints).
+2. A watcher (systemd timer, ~15s interval, with a `flock` so runs can't overlap) runs a **real
+   query** against the primary, not just `systemctl is-active`, which misses a wedged-but-running
+   resolver. Three traps, all found in the homelab's own watcher on 2026-09-12:
+   - **Require an actual answer, not a zero exit code.** `dig` exits 0 on SERVFAIL, so an
+     exit-code-only probe reads the broken-root-hints case as healthy. Pipe `+short` output through
+     `grep -q .`.
+   - **Probe TCP as well as UDP** (`dig +tcp`). FTL talks to its upstream over TCP too, and a
+     UDP-only probe was blind to a real 2026-07-22 failure where TCP connections were reset while
+     UDP still answered.
+   - **Two attempts per protocol within a run** (2s each), so one dropped packet doesn't fail over.
+     A failover restarts FTL (below), so false positives cost real outages. Keep the worst-case
+     probe time inside the interval; the homelab measured 8.1s against a blackholed host.
+   - **If the primary forwards to an upstream** (the homelab's Unbound → Quad9 DoT since
+     2026-10-23), a fixed-name probe only tests the cache. With `serve-expired` a stale answer
+     survives for a day, so a dead upstream reads healthy while every uncached name SERVFAILs
+     (reproduced with a test Unbound behind an nft drop). Add a probe for a **never-seen random
+     name** (`pdf-probe-<ns>-<rand>.cloudflare.com`) that must return NOERROR/NXDOMAIN.
+     `unbound-control flush <name>` is NOT a fix: it marks entries expired, which serve-expired
+     then serves. Pick a zone with NSEC "black lies" (cloudflare.com) so `aggressive-nsec` can't
+     synthesize the answer locally.
 3. On a genuine health-check failure: **clean cutover** (replace the upstream entirely, don't
    blend) to the secondary, plus an **immediate alert** (Telegram, PagerDuty, whatever's already
    wired up) — the human is told the instant the fallback engages, not after the fact via a
@@ -113,6 +148,11 @@ check for a real TLS record header if it's supposed to be encrypted — `17 03 0
 the payload, not just "port 853 is being used"), then restore the primary and confirm a clean
 revert. If the underlying host can reboot, do that too and confirm both services and the
 watcher's own state come back correctly rather than trusting a stale assumption.
+
+For a steady-state "is anything still in plaintext" check, capture egress for `port 53 and not net
+<LAN> and not net 100.64.0.0/10` for ~30 s. The control is a second capture of `dst port 853` on
+the same interface, which must show packets to the provider, or an empty first capture proves
+nothing. On 2026-10-25 both Pi-holes gave 0 plain packets against ~40 DoT packets to Quad9.
 
 ## Diagnosing a "DNSSEC validation looks broken" false alarm
 
@@ -156,3 +196,62 @@ per-try timeout, and treat "never got any response" as a `warn` (worth a glance)
 `fail` (confirmed broken), reserving `fail` for an actual non-`SERVFAIL` answer. See the
 homelab's `weekly-housekeeping-checks.sh` `pihole_dnssec_validation` check (fixed
 2026-08-30, `homelab-ansible` commit `bd8bfc7`) for a working example of this shape.
+
+## Unbound DoT forwarding gotchas (2026-10-23)
+
+- **A HUP reload does not load `tls-cert-bundle`.** Adding a `forward-tls-upstream` zone plus the
+  bundle by `systemctl reload unbound` left every handshake failing `certificate verify failed /
+  unable to get local issuer certificate` until a full restart. Restart on any TLS-related config
+  change. A fresh test instance on another port won't show it, because it starts cold.
+- **Check the network allows :853 from that host before switching.** A gateway "block DoT except
+  the Pi-hole" rule made the iMac replica SERVFAIL everything. `timeout 4 bash -c '</dev/tcp/9.9.9.9/853'`
+  from the host first, with `:443` as a control.
+- Never set `forward-first: yes` under a no-silent-fallback constraint: it falls back to recursion
+  when the forwarders fail.
+- Verify with `dig proto.on.quad9.net TXT` (returns `"dot"` over DoT), `dnssec-failed.org` →
+  SERVFAIL, and Google's `o-o.myaddr.l.google.com TXT` (no `edns0-client-subnet` line = no ECS).
+- Quad9-blocked domains that are DNSSEC-signed come back **SERVFAIL** through a validating Unbound
+  (Quad9's NXDOMAIN has no proof), not NXDOMAIN. Still blocked; just don't read it as an outage.
+- **Containerized Pi-hole (docker):** an `FTLCONF_dns_upstreams` env var makes `dns.upstreams`
+  read-only, so a watcher can't flip it — unpin it. But removing the var does NOT keep the old value:
+  FTL falls back to the image default (`8.8.8.8, 8.8.4.4`, plaintext) on recreate. Set the value with
+  `docker exec pihole pihole-FTL --config dns.upstreams '[ "127.0.0.1#5335" ]'` in the same breath
+  (better: have Ansible set it before the recreate is even possible to observe). The in-container FTL
+  restart a change triggers is fine — the container doesn't restart.
+- **Simulating an upstream outage for a containerized Unbound:** its egress goes through the host's
+  FORWARD path, so an nft `output` drop alone doesn't block it — add a `forward`-hook chain too. And
+  don't name the chain `fwd`: it's a reserved word in nft ("syntax error, unexpected fwd").
+
+
+## Forwarding mode: a leak-test burst trips the provider's per-IP block (2026-10-25)
+
+A DNS leak test (dnsleaktest.org) sends ~1,000+ random, mostly failing names in seconds. **Quad9
+blocks the whole public IP for ~30-60 s** when it sees that, which was proven from a second LAN host
+that sent none of the burst. Unbound makes it about 10x worse by default: on every SERVFAIL it
+re-asks each forwarder up to `outbound-msg-retry` (5) times, and the provider gives the same
+answer each time. The forwarders get benched (`tA 3`, `rto 120000` in `dump_infra`), every
+uncached name SERVFAILs in 0 ms, and the watcher fails over. Set, on every Unbound:
+```
+outbound-msg-retry: 0   # 1 absorbed single-resolver bursts; 0 needed when a client hits both Pi-holes at once
+infra-host-ttl: 60      # backstop: a bench clears in ~1 min, not 15+ (the iMac was stuck 18 min)
+infra-keep-probing: yes # host-down case only; does not fix this on its own
+```
+Even on 0, a two-resolver leak test (~2,300 names in 16 s) still trips about a 10 s block: what
+Quad9 reacts to is the failing-random-name pattern, not raw rate (the house's normal peaks reach
+118/s without any block). `unbound-control set_option` rejects 0, so set it in the config.
+**Every leak test still trips the block and fails both watchers over for ~1 min** (one alert pair
+per Pi-hole, recovery unaided). Whether the *report* shows Cloudflare is a race. The test sends
+waves over ~15 s, and the watcher's 15 s timer flips the upstream partway through. Any wave after
+that goes to Cloudflare. Four tests on 10/25: Cloudflare 145 (retry 1, primary flipped 2 s before
+the last wave), 0 (retry 0, burst ended 5 s before the flip), 158 (retry 0, a final wave of 112
+landed 2 s after the flip). retry 0 did not change the outcome; the clean run was timing. Expect
+Quad9 plus sometimes Cloudflare, never the ISP, and treat either as a pass, not an incident. Don't add a "ignore failovers under a minute" debounce: it
+would also hide the first minute of a real outage.
+Ruled out: `infra-cache-min-rtt` (no help), a Pi-hole per-client rate limit (real devices burst to
+700-1,365/min), and an Unbound rate cap (normal peaks are above a leak test's per-resolver rate). Testing: a lab Unbound on another port isolates Unbound state, *not* the
+provider's per-IP block, so each burst still briefly affects the house. Pause BOTH watchers (pihole's and
+imac's `pihole-dot-failover.timer`) before any DNS burst test: the per-IP block covers the shared
+public IP, so a burst against either resolver benches both. Resume each only after its own
+UDP+TCP+random-name probes pass 3x in a row, and check both Pi-holes' `change of dns.upstreams`
+log lines before reporting how many pages went out. Use an external probe from another host as the
+control. Detail: the `reference_unbound_forwarder_benching` memory.

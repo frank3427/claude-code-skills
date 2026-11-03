@@ -93,6 +93,53 @@ claude --permission-mode dontAsk \
 Expect: Bash reported as unavailable/blocked, Write succeeds and the file is actually
 created (verify on disk, don't just trust the model's claim).
 
+## Running a headless job on a different model endpoint, with a fallback (2026-09-12)
+
+Claude Code can point at any Anthropic-compatible `/v1/messages` gateway (e.g. a flat-rate router serving
+non-Claude models). Scope it to the one subprocess. Never put `ANTHROPIC_BASE_URL` in `settings.json`,
+and never on a Remote Control host, where it disqualifies Remote Control:
+
+```bash
+env -u ANTHROPIC_API_KEY \
+  ANTHROPIC_BASE_URL=https://gateway.example.com \
+  ANTHROPIC_AUTH_TOKEN="$GATEWAY_KEY" \
+  claude -p "$PROMPT" --model <gateway-model-id> --output-format json \
+  --disallowedTools "<same deny list>" </dev/null > out.json
+```
+
+- **`env -u ANTHROPIC_API_KEY` is load-bearing.** Without it, a "pass" might have come from Anthropic.
+  `ANTHROPIC_AUTH_TOKEN` is sent as `Authorization: Bearer`, which most gateways accept.
+- **Prove which model answered:** `modelUsage` keys in the JSON output. Don't trust the flag.
+- **`total_cost_usd` is computed from the CLI's own Claude price table.** On a flat-rate or non-Claude
+  gateway it's meaningless; never use it in a cost comparison.
+- **`</dev/null` on stdin.** Without it every run stalls ~3 s waiting for input.
+- **Probe the route before wiring anything.** POST to `/v1/messages` with a deliberately invalid key: a
+  401 with an auth hint means the route exists, a 404 means it doesn't. No real credential needed.
+
+**Cross-provider fallback lives in the wrapper.** The CLI's own fallback only switches models within
+one endpoint.
+- Run primary → validate → on failure re-run the fallback arm → record which arm produced the result and
+  why (an append-only log plus the job's run record).
+- **Fall back on:** rc≠0; a sub-timeout (primary + fallback must both fit inside the unit's job
+  timeout); `is_error`/subtype≠success; 429/overloaded/5xx; an empty result; **or the job's own
+  validation hook failing** (required report sections, a JSON schema).
+- **Cap the gateway arm's internal retries** (e.g. `CLAUDE_CODE_MAX_RETRIES`-style env). Uncapped, an
+  invalid key spent ~120 s retrying before failing.
+- **Pass identical tool restrictions to both arms.**
+- **Test the fallback both ways:** an injected bad key, a missing key, and a forced validation failure,
+  each showing the fallback model in `modelUsage`.
+
+**Test a non-Claude model on the REAL workload before switching production.** A short tool round trip
+(Read a file, answer) passed on GLM-5.3, then the same model failed both real jobs:
+- a long grading prompt used its full 540 s thinking and produced nothing
+- a report-writing prompt ran four back-to-back 32k-token thinking turns and wrote nothing in 30 min
+- a thinking-token cap and `--effort low` changed neither
+
+A smaller sibling (GLM-5.3-flash) finished both, but burned a malformed tool call every run and graded
+and itemised more loosely than Claude. **Failure-triggered fallback can't catch a well-formed but
+weaker answer.** Run a shadow comparison against the incumbent model (no side effects, results
+diffed per item) for anything that feeds a report a person relies on.
+
 ## Real-world reference implementation
 
 Built for the homelab's weekly automated housekeeping sweep — a headless Claude Code

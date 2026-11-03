@@ -196,6 +196,72 @@ that run from `ansible-ctrl` itself, or to wherever the automation actually runs
   other automation built on this skill that runs frequently enough for the same problem to
   recur.
 
+## The delivery path has to be able to fail (2026-09-06)
+
+For most of this system's life `send_telegram()` could not report its own failure:
+
+```bash
+curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+  -d chat_id="${TELEGRAM_CHAT_ID}" -d parse_mode="HTML" \
+  --data-urlencode text="$text" >/dev/null
+```
+
+No `-f`, no result check. **`curl` exits 0 on an HTTP 401**, so this returned success for a revoked
+bot credential, a wrong chat id, or the bot being removed from the chat — across all fifteen
+message types, every caller believing it had notified.
+
+What made it survivable indefinitely is the property this whole skill is built around: **the
+healthy state of these alerts is silence.** `daily-drift-check` pings only on new-or-worsened
+findings; the sweep only on warn/fail. So a permanently dead channel and a good week produce the
+identical observation, and nothing in the fleet could ever have surfaced the difference.
+
+**Both halves of the fix are load-bearing.**
+
+1. **The sender checks its own result.** HTTP code **and** the body's own `ok` field — Telegram
+   answers `200` with `{"ok":false}`, so either test alone is insufficient. Every attempt is
+   appended to `/root/state/telegram-sends.log`, and the function returns non-zero on failure.
+   **Never log the URL or the response body**: the URL carries the credential and the body echoes
+   the message. Before tightening the return value, confirm the callers' shell flags — all twelve
+   here use `set -uo pipefail` without `-e`, so a failed send cannot abort a report mid-run.
+
+2. **The channel gets a scheduled reason to speak.** `telegram-path-check.sh`, daily at 05:25
+   America/Chicago, five minutes ahead of `daily-drift-check` so the path is known good before the
+   day's alerting. It validates the credential (`getMe`) and the destination (`getChat`) rather
+   than sending anything, so it is **zero-noise** — it never messages Will when healthy. It alarms
+   **by email**, deliberately: *a channel cannot report its own death through itself.*
+
+**Testing this needs a failing control, because the broken code passes every happy path.** The
+suite that matters is four arms, not one:
+
+```
+send_telegram, bogus credential -> http=401 ok=false, returns non-zero   PASS
+send_telegram, real credential  -> delivered, returns zero               PASS
+path check, healthy             -> silent, exit 0, no email              PASS
+path check, bogus credential    -> both checks fail, would email, exit 1 PASS
+```
+
+The path check takes `--dry-run` so the failing arm can be exercised without mailing Will.
+
+**Generalises past Telegram.** Any delivery whose healthy state is silence — a webhook, a push API,
+a health POST — needs the same two properties: a sender that can distinguish refusal from success,
+and a scheduled proof of life that alarms somewhere else.
+
+**Two follow-ups found 2026-09-12:**
+- **A host can run a stale copy of the shared lib.** Pi-hole's failover watcher had a pre-9/06 copy of
+  the lib, so its pages were still unchecked and unlogged months after the fix. Any host that sources
+  the lib needs the lib *in its own playbook's deploy list*. Grep a host's deployed copy for the
+  result-check before trusting its alerts.
+- **Bound the send itself:** `curl --connect-timeout 10 --max-time 20-30` on Telegram, Postmark and
+  webhook calls. A send with no timeout against a server that accepts and never replies hangs the
+  whole report job. Verified: rc 28 at 30 s with the flags, still hanging at 45 s without.
+
+**Verify sends without messaging anyone:** put a stub `curl` first on `PATH` that records each request
+(URL with the token redacted, and the body) and returns a canned response. Include a failing canned
+response to prove the non-zero path. The real send functions then run unchanged, which is stronger
+than an `if --dry-run; then echo` branch that skips them. **Install the stub only at the delivery
+step.** One dry run had it active during the checks too, so every HTTP health check "passed" against
+the stub.
+
 ## Wiring up a new automation
 
 1. Write (or reuse) a checks script that gathers raw data and decide: does turning that into the

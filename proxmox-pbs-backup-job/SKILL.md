@@ -321,6 +321,25 @@ corrupted or incomplete application config and still show as "running." `pct exe
 through Proxmox's own attach mechanism and needs no network path at all, so there's no reason to
 give the restored container one.
 
+**Go one level further than `is-active`: assert the service's *function*** (2026-09-12). A unit can be
+active on an empty or broken dataset. Per-guest assertions that work with no network, all via `pct
+exec` or loopback inside the guest:
+
+| Guest type | Assertion |
+|---|---|
+| Pi-hole | resolves a known Local DNS Record via `dig @127.0.0.1` |
+| Caddy | :443 on loopback presents the expected wildcard cert CN |
+| Grafana | health DB ok, provisioned alert rules > 0 |
+| n8n | `/healthz` 200, and the workflow count in its DB is > 0 |
+| Laravel app | `/up` 200, and a core table row count is > 0 |
+| SQLite-backed services (HA recorder, credential brokers) | `pragma quick_check` = ok and key tables non-empty |
+| A service bound only to an address the clone can't have (e.g. a Tailscale IP) | skip the socket and assert its data store instead |
+
+**Prove each assertion can fail.** Run guest A's check inside guest B's restored container, where it must
+fail (e.g. rc 4 "no such unit"), while it passes in its own. Without that control, a check that always
+returns 0 looks identical to a working one. Run guests one at a time, checking host memory first, and
+confirm no throwaway CTID or VMID is left afterwards.
+
 ### Gotcha — giving the restored container *any* network path risks a live Tailscale identity collision with the real guest, even with a fresh MAC
 
 A restored container's disk is a byte-for-byte copy of the real guest's, including

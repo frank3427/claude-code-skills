@@ -1,26 +1,33 @@
 ---
 name: resilience-ledger-email-styling
-description: This skill should be used when sending or styling any transactional/notification email for Will (dfw, Olu, WordPress, or any future homelab automation) and it should carry the resilience-ledger design system look, when a new HTML email needs light+dark mode that actually works, or when debugging an email where dark mode text is invisible/low-contrast. Also load this before touching render-ledger-email.py, ledger-email-style.php, or render-terminal-report.py's HTML output. Trigger phrases include "ledger styled email", "resilience ledger design system email", "make this email look like the other ones", "dark mode email text invisible", "email dark mode not working", "wp_mail styled", "render-ledger-email.py", "status pill email", "callout box email html".
+description: This skill should be used when sending or styling any transactional/notification email for Will (dfw, Olu, WordPress, or any future homelab automation) and it should carry the resilience-ledger design system look, when a new HTML email needs light+dark mode that actually works, or when debugging an email where dark mode text is invisible/low-contrast. Also load this before touching render-ledger-email.py, ledger-email-style.php, render-terminal-report.py's HTML output, or render-correspondence-email.py (Claude Code's own prose emails to Will, markdown-in/HTML-out, entities distinguished by shape not colour). Trigger phrases include "ledger styled email", "resilience ledger design system email", "make this email look like the other ones", "dark mode email text invisible", "email dark mode not working", "wp_mail styled", "render-ledger-email.py", "status pill email", "callout box email html".
 ---
 
 # Resilience-ledger email styling
 
 A shared visual language for every outbound email in this environment — `dfw`/Olu's own sends,
-WordPress's `wp_mail()` notifications, and the homelab-wide weekly report system on
-`ansible-ctrl`. Built 2026-08-17 from the `resilience-ledger-design-system` Artifact Will liked
+WordPress's `wp_mail()` notifications, the homelab-wide weekly report system on `ansible-ctrl`,
+and (since 2026-09-05) Claude Code's own correspondence to Will. Built 2026-08-17 from the `resilience-ledger-design-system` Artifact Will liked
 (warm-paper/dark-ink "systems report" look — status pills, tinted callout boxes, IBM Plex
 Mono/Sans). This is a **different, separate visual language** from anything else in this
 environment named "Kanagawa" — don't confuse it with Ghostty's terminal theme.
 
 ## Source of truth for the palette
 
-`~/Desktop/resilience-ledger-design-system/tokens.css` on Will's Mac. Every hex value used
-anywhere in this pattern is hand-copied from that file — **re-derive from there, not from
-memory or from any of the three implementations below**, if the palette ever needs to change.
+**`~/Desktop/resilience-ledger-design-system/tokens.css` is GONE as of 2026-09-05** — the
+directory no longer exists on Will's Mac (he moves files between machines; this is not a
+mystery to investigate). The surviving authority is now
+`/root/bin/render-terminal-report.py` on `ansible-ctrl`, whose light and dark blocks carry the
+full palette. Re-derive from there. If Will ever restores the tokens file, it wins again.
+
+Historically: every hex value used anywhere in this pattern was hand-copied from that file —
+**re-derive from the surviving source, not from memory or from any of the implementations
+below**, if the palette ever needs to change.
 There is no shared stylesheet these implementations `@import` (email clients strip external
-CSS), so a palette change means editing all three by hand. Light values live in the bare
-selectors; dark values are the second `@media (prefers-color-scheme: dark)` block. Ignore the
-third `[data-theme="dark"]` block in that file — that's for a web toggle, irrelevant to email.
+CSS), so a palette change means editing all five by hand. In every one of them, light values
+live in the bare selectors and dark values in the `@media (prefers-color-scheme: dark)` block.
+The retired tokens file also carried a third `[data-theme="dark"]` block for a web toggle — if
+it resurfaces, ignore that block; it is irrelevant to email.
 
 ## The one rule that matters most: theme color goes through CSS classes, never inline
 
@@ -78,9 +85,9 @@ of rendering the authored dark palette:
 <meta name="supported-color-schemes" content="light dark">
 ```
 
-## The four implementations — no shared renderer across runtimes
+## The five implementations — no shared renderer across runtimes
 
-Same design language, four separate hand-written implementations, because nothing here can
+Same design language, five separate hand-written implementations, because nothing here can
 share code across the runtimes/hosts involved:
 
 1. **`/usr/local/bin/render-ledger-email.py`** on `dfw` (Python, world-readable/executable —
@@ -111,10 +118,66 @@ share code across the runtimes/hosts involved:
    restyle since it isn't deployed via `homelab-ansible` and nothing sweeps this repo). If #3's
    markup changes, port the change here too — don't let it drift again.
 
+5. **`/root/bin/render-correspondence-email.py`** on `ansible-ctrl` (git-tracked in
+   `homelab-ansible` as `scripts/render-correspondence-email.py`, deployed by
+   `claude-email-install.yml` — same versioned-source vs deployed-copy split as #3, so editing
+   the script proves nothing until that play runs). Added 2026-09-05. **Markdown in, HTML out**
+   — no JSON schema at all, because its content is prose rather than findings. It backs
+   `claude-send-email.sh --markdown`, which is Claude Code's own correspondence to Will: pause
+   handoffs and anything ad-hoc. Until it existed those went out as `TextBody` and nothing else.
+
+   **It runs on three hosts, byte-identical, and there is no shared filesystem to make it
+   anything else** (`ansible-ctrl` at `/root/bin/`, `dfw` and `hermes` at `/usr/local/bin/`,
+   each deployed from its own Ansible repo). `ansible-ctrl`'s copy in `homelab-ansible` is
+   canonical; a change there must be copied to the other two in the same session. Verify with
+   `md5sum` across all three — this is the same lockstep problem #4 lost for three days.
+
+   **On `dfw` and `hermes` it renders in the ROOT DISPATCHER, not in the agent** (added
+   2026-09-05 when Will asked for Olu's and Chuka's mail to match). The agent keeps writing
+   plain markdown into the spool queue exactly as before, so there is no agent-side change, no
+   new flag for an agent to remember, and nothing edited inside either agent's own workspace —
+   which matters on `dfw`, where `/home/openclaw` is off-limits and could not have been edited
+   anyway. Rendering belongs on the dispatcher side regardless: it already owns how a job
+   becomes a message, and a formatting decision has no business inside the confined process.
+
+   Default-on with an opt-out (a job may set `"markdown": false`), and a body that already
+   begins `<!doctype`/`<html>` passes through as `HtmlBody` untouched rather than being escaped
+   — that guard is what keeps #1's report output working through the same path. The markdown
+   still goes out as `TextBody` every time, so a failed render degrades to a plain readable
+   message rather than a lost one. The eyebrow and footer derive from the sending address's
+   local part, so Olu signs as Olu and Chuka as Chuka with no per-identity table to keep in
+   sync. Both dispatchers' audit logs record `html=yes/no`, so a silent fallback to plain text
+   is visible from the host rather than only from Will's inbox.
+
+   Its one real departure from #1–#4, chosen by Will from three options: **technical entities
+   are distinguished by shape, not colour.** Four inline treatments — command (filled, hairline
+   border, semibold), host/device (dotted underline, no fill), network/address (hairline border,
+   no fill), everything else (filled, no border). Shape survives greyscale, colour-blindness,
+   and a client that recolours text; colour stays reserved for callouts, where it means
+   something. Only `$` (command) and `@` (host) need author markup — addresses are regex-
+   detected, since tagging every subnet by hand is the friction that ends with a format going
+   unused. Callouts are `> [!FLAG|BLOCKED|OK|NOTE|NEXT] text`.
+
+   Prose is set in a **serif** here (`'IBM Plex Serif','Iowan Old Style',Georgia,serif`) rather
+   than Plex Sans — the only implementation that does. Iowan Old Style ships on macOS and iOS,
+   which is where Will reads mail, so the printed register survives the fact that no web font
+   ever loads.
+
 If a *new* consumer needs this styling: reuse #1's schema directly if the content is simple
 (a title, maybe a status callout, a few prose/data sections); reuse #3's schema if it needs
-categorized findings with per-item status and/or a follow-ups section. Don't invent a fourth
-schema without a real reason.
+categorized findings with per-item status and/or a follow-ups section; reuse #5 if the content
+is genuinely a *letter* — prose that happens to contain hosts and commands — rather than a
+status report. Don't invent a sixth schema without a real reason.
+
+**Two bugs #5 hit that any future implementation will hit too**, both found by screenshotting
+rather than by reading output:
+- **A wrapped list item silently leaves its list.** Markdown's lazy continuation (a bullet
+  whose source text runs onto the next line without a marker) is easy to omit from a hand-rolled
+  block parser; the tail then renders as a stray paragraph below the list, which looks like a
+  content mistake rather than a parser one.
+- **Code-span padding reads as a word space before punctuation.** At 5px horizontal padding an
+  inline entity followed by a comma renders as `UNIFI_API_KEY ,`. 3px keeps the fill legible
+  without the gap.
 
 ## Sending — Cloudflare Email Sending (dfw/Olu path)
 
@@ -147,23 +210,43 @@ the thing to check, not just that the `curl` call didn't error (see Verification
 
 The invisible-dark-text bug above was caught by **actually rendering and screenshotting the
 output**, not by reading the CSS and reasoning it should work. Before shipping any change to
-one of the four implementations (for #4, run the JS renderer under plain `node` against a
+one of the five implementations (for #4, run the JS renderer under plain `node` against a
 sample JSON payload to get an HTML file to screenshot — no Worker deploy needed just to check
 rendering):
 
-```bash
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --headless --disable-gpu --window-size=700,1000 \
-  --screenshot=/path/out.png "file:///path/to/rendered.html"
+```js
+// shot.js -- npm install playwright (no browser download needed, see below)
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ channel: 'chrome' });
+  for (const scheme of ['light', 'dark']) {
+    for (const [label, width] of [['desktop', 700], ['mobile', 390]]) {
+      const ctx = await browser.newContext({
+        colorScheme: scheme, viewport: { width, height: 900 }, deviceScaleFactor: 2,
+      });
+      const page = await ctx.newPage();
+      await page.goto('file://' + process.argv[2]);
+      await page.screenshot({ path: `shot-${scheme}-${label}.png`, fullPage: true });
+      await ctx.close();
+    }
+  }
+  await browser.close();
+})();
 ```
 
-**To check light mode when the environment's default is dark** (confirmed on this Mac —
-`--force-prefers-color-scheme=light` did *not* actually override the rendering in testing,
-don't rely on it): strip the `@media (prefers-color-scheme: dark) { ... }` block out of a throwaway
-copy of the rendered HTML (brace-counting from the media query's opening `{` to find its real
-close, since it contains nested `{}`), and screenshot that copy instead — with the override
-removed, only the base (light) rules can apply regardless of the environment's actual
-preference.
+**Use Playwright's `colorScheme`, not the old brace-stripping workaround.** An earlier version of
+this skill said to delete the `@media (prefers-color-scheme: dark)` block out of a throwaway copy
+in order to see light mode, because `--force-prefers-color-scheme` did not work under raw headless
+Chrome. That tests *modified* HTML, which is exactly the wrong thing for a bug whose whole nature
+is that the shipped file behaves differently than the file reads. Playwright emulates the media
+query properly and screenshots the real file, in both schemes, at two widths, in one pass.
+
+**`channel: 'chrome'` matters.** `chromium.launch()` with no options wants the exact browser build
+the installed `playwright` package pins, and the cached build on this Mac is usually older —
+`Executable doesn't exist at .../chromium_headless_shell-1243/...` while 1234 sits on disk. The
+documented fix (`npx playwright install chromium`) downloads a few hundred MB to solve a problem
+that does not need solving: `channel: 'chrome'` drives the Google Chrome already installed here,
+needs no download, and renders the same engine. `npm install playwright` on its own is enough.
 
 For a real end-to-end check (not just a local screenshot): send one isolated real test through
 whichever transport is relevant (`send_postmark_email` for `ansible-ctrl`, the Cloudflare

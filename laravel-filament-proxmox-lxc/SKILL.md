@@ -183,6 +183,24 @@ sampling for every event type (`requests`, `commands`, `exceptions`, `scheduled_
 real expected traffic against Nightwatch's free-tier event cap (300k/month as of 2026) before
 accepting a lower default; for an internal admin panel it's rarely close.
 
+### Keep machine traffic out of the free quota (learned 2026-10-08)
+
+The free plan's monthly event quota ran out at 100%, and the cause was almost entirely the app's own automation:
+5-minute and 15-minute timers calling `api/*`, plus an availability probe on `/`. Each request records the request
+itself plus every query and log line, and `LOG_LEVEL=debug` sends debug logs too. When the quota is exceeded, the agent
+logs `Ingest attempted … 200 [Exceeded quota]` and then `Authentication failed … 403 [Exceeded quota]`. The app keeps
+working; it's only telemetry that stops until the reset.
+
+- Exclude machine routes with the route middleware `Laravel\Nightwatch\Http\Middleware\Sample::never()`
+  (or `::rate(0.1)`) on the `api` groups.
+- For a probe on a shared URL, have the probe send a distinctive User-Agent. A tiny prepended global middleware then
+  calls `Nightwatch::dontSample()` when it sees that UA.
+- Set `NIGHTWATCH_LOG_LEVEL=warning`. It defaults to `LOG_LEVEL`, and the local log keeps everything regardless.
+- Exceptions survive: `report()` re-samples at the exceptions rate (default 1.0) when the request was unsampled
+  (`Concerns/CapturesState.php`).
+- Other knobs: `NIGHTWATCH_REQUEST_SAMPLE_RATE`, `NIGHTWATCH_IGNORE_QUERIES`, `NIGHTWATCH_IGNORE_CACHE_EVENTS`, and so on.
+  Read `vendor/laravel/nightwatch/config/nightwatch.php` for the installed version's list.
+
 ## Read-only Sanctum API for an external consumer
 
 Adding `GET`-only, token-gated JSON endpoints (e.g. so another agent/service can pull inventory

@@ -25,6 +25,12 @@ Swap `p=` for a different DNS provider module path, or chain multiple `&p=` para
 one plugin. Use `ansible.builtin.get_url` (or plain `curl`) straight to `/usr/local/bin/caddy`,
 mode `0755` — no build step needed on the target.
 
+**`get_url` with `force: true` re-downloads on every playbook run**, and the build server can
+return a different binary (a newer plugin, or a new Caddy release) with no version change on your
+side. `--check` always reports that task as changed. When a run is meant to change only the
+Caddyfile, compare `caddy version` with the latest release and use `--start-at-task "Deploy
+Caddyfile"`, then confirm the binary's checksum didn't move. Make upgrades a deliberate run.
+
 ## One wildcard cert covering many hostnames
 
 Put every internal hostname in a **single site block** keyed on the apex + wildcard, and route
@@ -97,6 +103,15 @@ Next.js app's `ALLOWED_HOSTS`-style env var checking for the tailnet hostname) a
 anything else. Override it to whatever the backend actually expects. Tailscale-issued certs are
 already publicly trusted (Let's Encrypt via Tailscale), so no `tls_insecure_skip_verify` needed
 for this path.
+
+**The Host override breaks CSRF origin checks.** The browser still sends `Origin:
+https://service.example.dev`, which no longer matches the Host the backend sees. Grafana rejects
+every logged-in write with 403 `origin not allowed`; fix it with `csrf_trusted_origins =
+service.example.dev` under `[security]` *before* the switch. A plain login test won't show this,
+because Grafana skips the check when there is no session cookie. Test with a dummy one:
+`curl -X POST -H 'Origin: https://service.example.dev' -H 'Cookie: grafana_session=x'
+https://backend.ts.net/api/dashboards/db` should give 401, not 403, and a foreign Origin should
+still give 403 (found 2026-10-25 moving Grafana off a plain-HTTP LAN upstream).
 
 ## Split-horizon internal DNS
 

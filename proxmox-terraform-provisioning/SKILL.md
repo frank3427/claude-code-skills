@@ -136,6 +136,13 @@ Ansible/manual admin), then bring it under Terraform with the same
 (resize, destroy, tag changes) goes through `terraform apply` with the scoped token from that
 point on — only the one-time create needs host shell.
 
+**Adding `agent { enabled = true }` to an existing VM (2026-10-30, HA VM 150):** it plans as a clean
+in-place update, but the virtio-serial device appears only after a full stop and start. Apply it
+while the VM is **stopped**: shut it down cleanly first, then `started = true` boots it with the
+device. Check every VM for an `agent:` line. Without one, a guest may ignore ACPI, and every host
+shutdown then waits Proxmox's 180 s stop timeout and SIGTERMs it, which blows a UPS shutdown
+budget.
+
 **Gotcha 7 — `generate-config-out` needs the QEMU guest agent already running** to read back
 network config, or it fails with `error waiting for network interfaces from QEMU agent`. Install
 and start `qemu-guest-agent` inside the guest *before* running `generate-config-out` — Debian's
