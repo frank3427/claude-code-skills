@@ -485,6 +485,14 @@ cert for a consumer's trust bundle, read **only** `ca.crt.pem`, e.g. an Ansible 
   the same day it turned out Chuka's 3x/week gym-parking API (`ogr-api.offstreet.io`) never ran
   while the watcher was up. Before switching, also read the agent's cron jobs and the skills they
   load (`~/.hermes/cron/jobs.json`, the SKILL.md files they name) for every host they call.
+  **OAuth-backed tools refresh on a different host than they call.** Google calls
+  www.googleapis.com and refreshes at oauth2.googleapis.com. Krisp MCP calls mcp.krisp.ai and
+  refreshes at api.krisp.ai/platform/v1/oauth2/token. A week of watching can't show the refresh
+  host, because it is only hit when the access token expires. After the switch, the first expiry
+  fails, and the tool looks broken days later. Read each tool's OAuth metadata
+  (`/.well-known/oauth-authorization-server`) and allow its `token_endpoint`, path-scoped.
+  Hermes then parks the MCP server "until credentials change", so after the fix, restart the
+  gateway; don't wait for the 5-minute probe.
 - **Coverage audit.** Traffic to a host that no service in the vault covers passes through
   untouched under the default policy. So "the agent's traffic goes through the proxy" does not
   mean "its keys are brokered". Compare `agent-vault vault service list --vault <v>` against the
